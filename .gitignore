@@ -1,0 +1,50 @@
+# Python and JavaScript environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Machine-specific configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Research data, weights, and generated diagnostics
+Dataset/
+Dataset-AGCRN/
+data/
+model/
+models/
+backend/uploads/
+backend/assets/*
+!backend/assets/README.md
+*.npy
+*.npz
+*.mat
+*.nc
+*.nc4
+*.pt
+*.pth
+*.ckpt
+*.tar
+*.tar.gz
+*.zip
+
+# Local development and research records
+.agents/
+.claude/
+.codex/
+.harness/
+tmp/
+output/

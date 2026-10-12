@@ -1,0 +1,1978 @@
+"""逐格点 LSTM checkpoint 在线推理。
+
+── 冻结声明（2026-09-21，变更 retire-legacy-job-routes）──────────────────
+本模块的 8 条 `/jobs*` 路由与 8 个 handler 是**已退役公开面的差分对拍 oracle**。
+`POST /api/predict/jobs` 及其 7 条产物端点已于 2026-09-21 从 `main.app` 摘除
+（功能等价出口为 `/api/chain/jobs*`），但本模块**整体原地保留**，由
+`test_predict_chain.py` / `test_chain_api.py` 通过**自建内存 app**
+（`FastAPI().include_router(live_prediction.router)`）驱动 —— 核心验收
+「数值一致性」的最强证据（新旧逐位对拍）依赖这条执行路径活着。
+
+  · **不得作为死代码删除**：删它等于"为了删死代码，先拆掉度量工具"，
+    验收强度会从"差分对拍"掉到"只剩磁盘基线"。
+  · 解冻条件（三者同时成立才可删）见
+    `.harness/adr/ADR-001-retire-legacy-job-routes.md` —— **请指向该 ADR
+    （稳定路径），不要引用 `design.md`**（它随本变更归档迁到
+    `spec/changes/archive/` 下）。
+──────────────────────────────────────────────────────────────────────────
+
+两条输入路径，共用同一套后台推理与结果接口：
+
+  ① `.npy`  —— 训练同口径的一维 projected CIO 序列（112 / 2240 / 官方 2352）
+  ② `.zip`  —— 原始气象场（5–9 月逐日 nc，21 年 × 5 月），走 `cioproj` 现场投影
+
+两条路径最终都落到 `_prepare_cio`，再逐格点读权重生成 (81, 101, 112) 的预测降水数组。
+权重的来源有两条（变更 `import-all-models`，网格扩到 400 组见 `expand-model-catalog`）：
+
+  · `(pre1, 2000)`  —— 冻结的 tar 归档 `MODEL_ARCHIVE`（流式读 8181 个成员），
+                       是回归基线，加载与前向口径**逐位不变**；归档优先级
+                       **无条件**高于任何目录根（外置盘上的同名目录永不读取）。
+  · 其余 `(lead, year)` —— `MODEL_ROOTS` 下的散装目录 `{root}/{lead}/{year}/NN_NNN.pt`，
+                       受理阶段即按 `count == 8181 && Σsize == 1558039617 && 坐标全覆盖`
+                       判完整性，只读被请求的那一组。
+
+候选网格是**声明式区间常量**（`pre1..pre20` × `2000..2019` = 400），`available`
+才是盘面派生量。三根默认顺序见 `DEFAULT_MODEL_ROOTS`（仓库内 → E: → F:）。
+
+⚠ **两条已知耦合（写在此处，防止下一轮有人"重新发现"）**：
+
+  1. **扩权重批次必须同步扩 `GROUP_LEADS`/`GROUP_YEARS`**：网格是常量、盘面是
+     变量，二者会分叉；新批次若不在网格里，它**不会**出现在清单（不是标
+     `available:false`，而是根本不出现）。
+  2. **三项守卫只证"形状"、不证"内容身份"**：`count` / `bytes` / 坐标覆盖都是
+     格点形状决定的常量（实测三根只有两种 `.pt` 尺寸），所以任何"同样 8181 文件、
+     同样字节和、同样坐标覆盖"的另一版权重都会通过判定 ⇒ **"哪一版算数"完全由
+     `MODEL_ROOTS` 的顺序裁决，即"根顺序 = 版本优先级"**（D → E → F）。不得把
+     `available:true` 读作"权重内容已被验证正确"。
+
+归一化口径（对 `src/src/prediction.py:54-88` 与 `main_India_new.py:17` 复现）：
+  先把序列截/取到训练长度 2240，对整段做 min-max，再按目标年切 112 天。
+  目标年**按序列自带的年表逐年累加天数**定位（`locate_year_window`），
+  落在 2240 之后时才把基准扩到覆盖它并置 `mode="extended-base"` + warning。
+  checkpoint 不含 CIO 的 min/max，所以尺度一致性取决于输入序列本身与训练同源。
+
+旧路由 `/api/predict/jobs` 与 `/api/cio/*` 仍只受理 year=2000、lead=pre1（域没变，
+默认年槽 0 在那里是正确值）；链路 `/api/chain/jobs` 的 `(year, lead)` 已放开，
+见 `resolve_model_group` / `list_model_groups`。
+"""
+
+from __future__ import annotations
+
+import errno
+import hashlib
+import io
+import json
+import logging
+import os
+import re
+import shutil
+import tarfile
+import threading
+import time
+import uuid
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path, PurePosixPath
+from typing import Callable
+
+import numpy as np
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
+
+import cioproj
+import mock_sandbox
+import verification
+
+
+logger = logging.getLogger("live_prediction")
+
+
+GRID_ROWS = 81
+GRID_COLS = 101
+N_STEPS = 112
+
+# 训练侧口径：src/src/main_India_new.py:17 把序列截到 2240 = 20 年 × 112 点
+TRAIN_SEQ_LEN = N_STEPS * 20
+EXPECTED_MODELS = GRID_ROWS * GRID_COLS
+
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
+DEFAULT_MODEL_ARCHIVE = (
+    PROJECT_ROOT / "新端口-模型训练" / "pre1_2000.tar.gz"
+)
+MODEL_ARCHIVE = Path(os.environ.get("MODEL_ARCHIVE", DEFAULT_MODEL_ARCHIVE))
+JOB_ROOT = Path(os.environ.get(
+    "PREDICTION_JOB_ROOT",
+    BACKEND_DIR / "uploads" / "prediction_jobs",
+))
+
+# ── 权重组目录源（变更 import-all-models，design D1/D2；expand-model-catalog 扩到 400）──
+# 散装权重目录形如 `{root}/{lead}/{year}/NN_NNN.pt`。`MODEL_ROOTS` **顺序即优先级**，
+# 且因三项守卫只证**形状**（见模块头注释的耦合 2），顺序即**版本优先级**：
+# 解析 `(lead, year)` 时按根顺序取**第一个完整**的组目录 —— 某根上目录**存在但
+# 未通过三项守卫**时继续试后续根（"第一个存在目录胜出"会把半截副本当成"有这一组"，
+# 让有完整权重的用户拿到 available:false 且**无法自救**：前端渲染为不可选）。
+# 默认三根（D3，顺序 = 优先级，**不依赖任何环境变量才生效**）：仓库内演示子集 →
+# `E:` → `F:`。env `MODEL_ROOTS`（`os.pathsep` 分隔的多值）可整体覆盖为多根。
+# 模块加载时求值，但**解析函数每次调用时读模块属性**，这样测试可以猴补
+# （与 `MODEL_ARCHIVE` 同一条惯例）。
+DEFAULT_MODEL_ROOTS = [
+    PROJECT_ROOT / "model" / "服务器模型_pt",   # D：仓库内演示子集（36 组）
+    Path("E:/服务器模型_pt"),                   # E：外置盘（pre1..pre20，多数 2000–2013）
+    Path("F:/服务器模型_pt"),                   # F：外置盘（pre1..pre20 × 2014–2019）
+]
+_MODEL_ROOTS_ENV = os.environ.get("MODEL_ROOTS", "").strip()
+MODEL_ROOTS: list[Path] = (
+    [Path(item) for item in _MODEL_ROOTS_ENV.split(os.pathsep) if item.strip()]
+    if _MODEL_ROOTS_ENV else list(DEFAULT_MODEL_ROOTS)
+)
+
+# 组完整性判据（design D2）：数量 + 字节和 + 坐标全覆盖。三者都**实测**过：
+# 仓库内每一组完整权重的这三个值都相同（8181 / 1558039617），所以单看数量与字节和
+# 分不出"内容属于哪一组"—— 它们只用来判"是不是完整的这一组"。
+GROUP_FILE_COUNT = EXPECTED_MODELS
+GROUP_TOTAL_BYTES = 1558039617
+# 成员名形状：**全串锚定**，与归档分支的 `MODEL_NAME_RE`（带 `pre1/2000/` 前缀）
+# 并存不替换 —— 归档里的成员名带目录前缀，目录里的是裸名。
+GROUP_MEMBER_RE = re.compile(r"^(\d{2})_(\d{2,3})\.pt$")
+
+# 候选网格（D2）：**声明式区间常量**，`pre1..pre20` × `2000..2019` = **400 项**。
+# **不得由扫盘派生**：从盘派生会让"外置盘缺席 ⇒ 那 364 组从清单里消失"，而前端
+# `isValidModelCatalog` 是 all-or-nothing（某个 lead 分组凭空少一组，整份清单被判
+# 非法、选择器回落成单一组合）。`available` 才是盘面派生量。
+# ⚠ 与盘面的耦合见模块头注释的耦合 1（**扩权重批次必须同步扩这两个常量**）。
+GROUP_LEADS = tuple("pre%d" % n for n in range(1, 21))     # 20 个提前期
+GROUP_YEARS = tuple(range(2000, 2020))                     # 20 个年份
+# 冻结归档 `pre1/2000` 的标识（`resolve_model_group` 的归档短路用；`list_model_groups`
+# **不再**为它写特例 —— 它只是 400 格里的一格，`source` 由谓词给出）。
+FROZEN_LEAD = "pre1"
+FROZEN_YEAR = 2000
+# `.npy` 入口没有年份元信息，序列首年按此常量视作 2000 年（design D7）
+SERIES_EPOCH_YEAR = 2000
+
+# ── 扫描缓存 / 落盘清单 / 预热的配置（D5/D6/D7）───────────────────────────
+# 落盘清单的目录是**模块级常量且可猴补**：测试套件把任务目录隔离到临时区
+# （`TMP_BASE`），若这里不可猴补，测试会读写**真实的** `backend/uploads/`，
+# 造成"测试之间通过磁盘互相影响"的隐蔽耦合。`backend/uploads/` 已被 `.gitignore`
+# 的 `uploads/` 规则覆盖（R11）。
+MODEL_SCAN_MANIFEST_DIR = BACKEND_DIR / "uploads"
+
+
+def _env_num(name: str, default, *, floor=None, cast=float):
+    """解析数值型 env：**解析失败或低于下限一律回落默认值并记警告**，绝不抛异常。
+
+    为什么不在导入期裸 `float()`（code-review C015）：下面三个常量都在 **import 期**求值，
+    env 写成非数字会让 `import live_prediction` 直接抛 `ValueError` —— 两个在线站点连
+    **启动**都失败（且是裸 traceback，看不出是哪个 env 的问题）。`floor` 是**拒绝阈值**
+    （不是夹取目标）：`MODEL_SCAN_TTL=0` 若"抬到下限 1 s 取"，会让后台轮次变成最快 1 轮/秒、
+    每轮最多 K 条 8181 条目全量枚举，**持续打外置盘** —— 而外置盘要留给两个站点跑推理。
+    ⇒ **低于下限与解析失败同解：记警告 + 回落默认值**（默认值即设计工况）。
+
+    **只作用于 env 解析**：测试直接改模块属性（如 `lp.MODEL_SCAN_TTL = 0.02`）不受下限约束。
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return cast(default)
+    try:
+        value = cast(float(raw))
+    except (TypeError, ValueError):
+        logger.warning("环境变量 %s=%r 不是数字，已回落默认值 %s", name, raw, default)
+        return cast(default)
+    if floor is not None and value < floor:
+        # **取值 < 下限 ⇒ 回落默认值，而不是"抬到下限"**：下限是**拒绝阈值**，不是夹取目标。
+        # 反例（本函数初版就这么写的，被 I.3 用例当场揪出）：`MODEL_SCAN_TTL=0` 抬到下限
+        # 1.0 s ⇒ 后台轮次 1 秒一轮、每轮最多 K 条 × 8181 条目 —— 与 `=0` 想防的
+        # "持续打外置盘"**一个量级**，等于该兜底没兜住。默认值 300 s 才是设计工况。
+        logger.warning("环境变量 %s=%r 低于下限 %s，不是可用取值，已回落默认值 %s",
+                       name, raw, floor, default)
+        return cast(default)
+    return value
+
+
+# 缓存兜底 TTL（PM 确认 300 s，env 可调）。**每次读模块属性**（与 `MODEL_ROOTS`
+# 同一条惯例），不在导入期固化成局部量。
+MODEL_SCAN_TTL = _env_num("MODEL_SCAN_TTL", 300.0, floor=1.0)
+# 请求路径**之外**的单轮重扫预算 K（每轮最多重扫几组）。K 必须是正整数语义：
+# 实现里取 `max(1, K)`，即 `K <= 0` 时仍至少重扫 1 条 —— "从不重扫"与"只在启动时
+# 预热一次"同属死参数，不算满足（C009）。
+MODEL_SCAN_BUDGET = _env_num("MODEL_SCAN_BUDGET", 4, floor=1, cast=int)
+# 单组扫描的**事后**保底判定（P4）：`os.scandir` 阻塞在系统调用里时 Python 无法
+# 抢占，所以这不是硬超时 —— 语义是"单组花掉超过这个时长 ⇒ 中止本轮后台扫描并
+# 记日志"，避免掉速/休眠的外置盘把后台轮次无限期拖住（**不得**把它说成硬超时）。
+MODEL_SCAN_STALL_LIMIT = _env_num("MODEL_SCAN_STALL_LIMIT", 30.0, floor=1.0)
+# 预热总开关（**默认开启**）。`0` 关掉的是**整个后台执行体**：启动预热与周期轮次
+# 都没有 ⇒ **TTL 兜底随之不生效**（逾期条目没有执行体去重扫）。这是显式选择的
+# 逃生口，代价已写进运行手册（C008），**不得**让运维以为 TTL 还在工作。
+MODEL_PREWARM = (
+    os.environ.get("MODEL_PREWARM", "1").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+
+# CIO 模态固定资产：投影 ∝ e 的后 3321 列。真件在服务器
+# /mnt/mydisk2/zxy/data/rain/CIOmode_1982_2017.mat，需手工放入 assets/。
+ASSETS_DIR = BACKEND_DIR / "assets"
+DEFAULT_MAT = ASSETS_DIR / "CIOmode_1982_2017.mat"
+
+# 服务器真件里 e 的形状（100 个模态 × [SST 2707 | U850 3321]）
+MAT_SHAPE = (100, cioproj.N_SST + cioproj.N_U850)
+# 真件是正交模态矩阵（e·eᵀ ≈ I，实测偏差 4.2e-15）；夹具是随机数（偏差 6.3e+03）
+MAT_ORTHO_TOL = 1e-6
+
+# zip 原始场入口的限额：夹具 105 个 nc 约 31 MB，真实 CESM 场留足余量
+MAX_ZIP_FILES = 600
+MAX_NC_TOTAL_BYTES = 4 * 1024 ** 3
+
+# 官方命名 cesm.u850.anom.daily.YYYYMM02-28days.nc
+NC_YEAR_RE = re.compile(r"\.(\d{4})(\d{2})\d{2}-28days")
+
+LEAD_RE = re.compile(r"^pre(\d{1,2})$")
+
+MODEL_NAME_RE = re.compile(
+    r"(?:^|/)pre1/2000/(\d{2})_(\d{2,3})\.pt$"
+)
+
+router = APIRouter(prefix="/api/predict", tags=["live-prediction"])
+
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lstm-predict")
+
+
+def _public_job(job: dict) -> dict:
+    """仅返回可安全公开给前端的任务字段。"""
+    fields = (
+        "jobId", "status", "stage", "progress", "filename", "inputShape",
+        "inputKind", "normalization", "projection", "warning",
+        "createdAt", "startedAt", "finishedAt", "durationSeconds", "result",
+        "error",
+    )
+    return {key: job.get(key) for key in fields if key in job}
+
+
+def _get_job(job_id: str) -> dict:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "预测任务不存在或后端已重启")
+        return dict(job)
+
+
+def _update_job(job_id: str, **changes) -> None:
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(changes)
+
+
+# ------------------------------------------------------- 异常文本脱敏
+
+# 路径片段的字符集：到空白/引号/括号/消息分隔标点为止 —— 那些是**消息的**
+# 分隔符，不是路径的一部分（路径里的 `/` `\` 保留）。
+_PATH_BODY = r"""[^\s"'`<>()\[\]{}|,;]"""     # 含路径分隔符
+_PATH_SEG = r"""[^\s"'`<>()\[\]{}|,;/]"""     # 段内字符（不含 `/`）
+_ABS_PATH_RES = (
+    # Windows 盘符：D:\a\b\x.nc / C:/a/b/x.nc。
+    # `(?<![A-Za-z])` 是为了不把 `https://` 的 `s:/` 当成盘符（前一字符是字母）。
+    re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]" + _PATH_BODY + "*"),
+    # UNC：\\server\share\x.nc
+    re.compile(r"\\\\" + _PATH_BODY + "+"),
+    # POSIX 绝对路径：/a/b/x.nc（要求 ≥2 段，且不在词/URL 中间起头）
+    re.compile(r"(?<![\w./])/(?:" + _PATH_SEG + r"+/)+" + _PATH_SEG + "+"),
+)
+
+
+def _abs_path_to_leaf(match: "re.Match") -> str:
+    """把命中的绝对路径换成一个**只含文件名**的片段。"""
+    token = match.group(0).rstrip("\\/")          # 目录形式：结尾是分隔符
+    leaf = re.split(r"[\\/]", token)[-1]
+    return leaf or "<path>"
+
+
+def _scrub_abs_paths(text: str) -> str:
+    """剥掉异常文本里的**服务器绝对路径**，只留文件名，其余字符一个不动。
+
+    为什么不是"整个 message 一律丢弃"：`_safe_exc` 的 else 分支是**故意的诊断
+    出口** —— "预测场形状 (5,5,5) 与实况场 (3,3,3) 不一致" / "Cannot parse
+    header: ''" / "No data left in file" 全靠它原样透出，整条丢弃等于毁掉诊断。
+    所以这里只做**替换**：`D:\\…\\x.nc` → `x.nc`（与 `.filename` 分支同口径）。
+    """
+
+    for pattern in _ABS_PATH_RES:
+        text = pattern.sub(_abs_path_to_leaf, text)
+    return text
+
+
+def _safe_exc(exc: BaseException) -> str:
+    """异常 → 可进响应的短串，绝不带绝对路径。
+
+    带 `.filename` 的异常（`FileNotFoundError` 等 `OSError` 家族）把**服务器绝对
+    路径**放在两个地方：`str(exc)` 里和 `exc.filename` 里。异常文本会经
+    `error=` / `verification.reason` 直接进响应，`error` 还会被前端**上屏**
+    （见 R3-4）。所以带 `.filename` 时只保留**文件名**。
+
+    不带 `.filename` 的走 `_scrub_abs_paths`：**只把绝对路径片段换成它的文件名**，
+    其余字符原样保留 —— 最有用的诊断信息全在这条 else 上：形状不一致（"预测场
+    形状 (5, 5, 5) 与实况场 (3, 3, 3) 不一致"）、npy 损坏（"Cannot parse
+    header: ''"）、0 字节（"No data left in file"）。无条件套 `[Errno None] None`
+    会把它们全毁掉；而无条件原样返回则会把 message 里的绝对路径透出去（T4-4）。
+
+    ⚠ `.filename` **可能是 None**（实测 `OSError(ENOMEM)`：errno 有、filename
+    没有），也可能是 bytes 或 int 文件描述符 —— `os.fsdecode` 只吃
+    str/bytes/PathLike，其余按"没有文件名"处理，别让它把异常吞成 TypeError。
+
+    **覆盖范围（别扩大理解）**：本净化器处理"异常自带 `.filename`"与"message
+    里带绝对路径"两类；**只剥路径片段，不改其余文案**（`_scrub_abs_paths`）。
+    用点三处：执行路径上新旧两条路由**各一个**总闸（`_run_job` /
+    `chain._run_chain_job`）+ 实况检验的 reason。**受理/校验路径**另有约 11
+    处 `str(exc)` 出口**未纳入**，其中 `chain._mat_identity(required=False)` 的
+    `matUnavailable: str(exc)` 是直接进响应体的，实测（把 `CIOPROJ_MAT` 指向
+    不存在的路径 → POST 一个 `.npy`）202 响应里带出 `.mat` 的绝对路径 —— 与
+    R3-4 同一类，属遗留项，本轮按 PM 口径不扩改动面。
+    另外，**我们自己 `raise` 的、把路径写进 message 的异常**必须填 `.filename`：
+    单参 `FileNotFoundError(f"...{PATH}")` 的 `.filename` 是 None，会走下面的
+    else 原样吐出。本轮已把 `_run_archive_inference` 的"模型压缩包不存在"
+    改成三参形式，D3 有用例钉住（改造前实测：error 里带出模型包绝对路径，
+    且该串前端上屏）。以后再 `raise` 带路径的 `OSError`，照此办理。
+    """
+    name = getattr(exc, "filename", None)
+    if name:
+        try:
+            name = os.fsdecode(name)
+        except (TypeError, ValueError):     # int fd / 其它怪东西
+            name = None
+        if name:
+            errno_ = getattr(exc, "errno", None)
+            head = f"[Errno {errno_}] " if errno_ is not None else ""
+            return f"{head}{type(exc).__name__}: {os.path.basename(name)}"
+    # 没有 `.filename` 的走这里。**不能无条件原样返回**：message 里带绝对路径
+    # 而 `.filename` 为空的异常真实可达（`cioproj.read_nc` 的四后端聚合、
+    # `cioproj.load_field` 的 `nc_dir=%s`、`RuntimeError(f"包装: {inner}")`
+    # 这类包装异常）—— 实测它们会把 `D:\…\chain_jobs\<id>\raw\*.nc` 原样送进
+    # `error` 并前端上屏。所以这里过一道**只换路径、不动其余字符**的剥离。
+    return _scrub_abs_paths(f"{type(exc).__name__}: {exc}")
+
+
+def locate_year_window(
+    days_per_year: dict, year: int, size: int, span: int = N_STEPS
+) -> int:
+    """按**逐年累加实际天数**定位 `year` 在序列里的起点偏移（design D5-1）。
+
+        start = Σ days_per_year[y] for y in sorted(days_per_year) if y < year
+
+    **不换算年槽**、**不用** `(year - 2000) * 112` 这类位置公式：年槽概念在任一年
+    缺月时都无定义（`pre_year = years.index(year)` 会静默取到错的 112 天）。
+
+    三条受理条件缺一即 `ValueError`（调用点转 400 / 任务失败）：
+      ① 年表含 `year`；② `days_per_year[year] == span`；③ `start + span <= size`。
+    """
+    if not days_per_year:
+        raise ValueError("序列没有年表（daysPerYear），无法按年份定位窗口")
+    try:
+        table = {int(key): int(value) for key, value in dict(days_per_year).items()}
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"年表格式不正确：{days_per_year!r}") from exc
+    if year not in table:
+        years = sorted(table)
+        raise ValueError(
+            f"目标年 {year} 不在序列年表里（现有 {years[0]}–{years[-1]} 共 "
+            f"{len(years)} 年）"
+        )
+    if table[year] != span:
+        raise ValueError(
+            f"目标年 {year} 在序列里只有 {table[year]} 天（窗口需要 {span} 天），"
+            "摘不出完整的 112 天窗口"
+        )
+    start = sum(table[key] for key in sorted(table) if key < year)
+    if start + span > int(size):
+        raise ValueError(
+            f"目标年 {year} 的窗口 [{start}, {start + span}) 超出序列长度 {size}"
+        )
+    return int(start)
+
+
+def uniform_year_calendar(size: int, year: int | None = None) -> dict:
+    """`.npy` 入口的年表：按 `SERIES_EPOCH_YEAR` 起造**均匀**年表（design D7）。
+
+    文件里没有年份元信息，常量纪元是唯一不动上传契约的确定化方式。`.npy` 与 `.zip`
+    **走同一条** `locate_year_window`，只是年表来源不同（这里造、那里读 U850 的）——
+    禁止另写一套"按纪元换算偏移"的实现，两套实现必然漂移。
+    """
+    span = N_STEPS
+    return {
+        "daysPerYear": {
+            SERIES_EPOCH_YEAR + k: span for k in range(int(size) // span)
+        },
+        "year": year,
+    }
+
+
+def _prepare_cio(
+    raw: np.ndarray, pre_year: int = 0, *, calendar: dict | None = None
+) -> tuple[np.ndarray, dict]:
+    """按训练侧口径准备目标年的 112 天 CIO。
+
+    复现 src/src/main_India_new.py:17 的 `cio[:, :2240]` 与
+    src/src/prediction.py 的 `normalize` + `input[112k : 112(k+1)]`：
+    先把序列截到训练长度 2240，对**整段**做 min-max，再按目标年切块。
+
+    **两种入口（design D6）**：
+
+    * `calendar=None`（旧路由 `/api/predict` 与 `/api/cio`）—— 行为与变更前
+      **逐位一致**：按年槽 `pre_year` 切 `[112k : 112(k+1)]`，基准恒为前 2240 点。
+    * `calendar={"daysPerYear": {...}, "year": Y}` —— 在**切片前**用
+      `locate_year_window` 按年份定位（不满足其三条受理条件即 `ValueError`），
+      归一化基准 `base_end = min(size, max(2240, start + 112))`：
+        - `base_end == 2240` ⇒ 与上游 `cio[:, :2240]` 同口径，`mode` 逐字不变；
+        - `base_end > 2240` ⇒ `mode="extended-base"` **且**带 warning（扩基准会改变
+          归一化取值，绝不静默）。
+
+    长度策略（`base_end < 2240` 时）：
+      112 ≤ T < 2240  整段自归一，mode="partial" + warning（缺月份的真实序列）
+      T < 112   报错
+    """
+    arr = np.asarray(raw)
+    if arr.ndim > 1:
+        arr = np.squeeze(arr)
+    if arr.ndim != 1:
+        raise ValueError("CIO 必须是一维数组，或 squeeze 后为一维数组")
+    if not np.issubdtype(arr.dtype, np.number):
+        raise ValueError("CIO 数组必须为数值类型")
+    if not 0 <= pre_year < 20:
+        raise ValueError("pre_year 必须在 0..19")
+    if arr.size < N_STEPS:
+        raise ValueError(
+            f"CIO 序列只有 {arr.size} 点，不足一年（{N_STEPS} 点），无法预测"
+        )
+
+    arr = arr.astype(np.float64, copy=False)
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("CIO 数组包含 NaN 或无穷值")
+
+    warnings: list[str] = []
+    if calendar is None:
+        start = N_STEPS * pre_year
+        target_year = None
+    else:
+        target_year = int(calendar.get("year"))
+        table = {int(k): int(v) for k, v in
+                 dict(calendar.get("daysPerYear") or {}).items()}
+        start = locate_year_window(table, target_year, arr.size)
+        # 前序年缺月**不阻断**（design D8）：定位按实际天数累加，缺月只让窗口
+        # 相对 `pre{N}` 约定平移。平移必须留痕，否则就是新的静默偏差。
+        shifted = [key for key in sorted(table)
+                   if key < target_year and table[key] != N_STEPS]
+        if shifted:
+            warnings.append(
+                "前序年份 %s 在窗口内不是 %d 天，目标年 %s 的窗口相对训练约定有平移"
+                "（按实际天数累加定位）。" % (shifted, N_STEPS, target_year)
+            )
+
+    base_end = min(arr.size, max(TRAIN_SEQ_LEN, start + N_STEPS))
+    base = arr[:base_end]
+    if base_end < TRAIN_SEQ_LEN:
+        mode = "partial"
+        warnings.append(
+            f"序列只有 {arr.size} 点（< 训练长度 {TRAIN_SEQ_LEN}，通常因为缺月份），"
+            "按现有长度整段 min-max；尺度与训练不完全一致。"
+        )
+    elif base_end == TRAIN_SEQ_LEN:
+        mode = "training-equivalent"
+    else:
+        mode = "extended-base"
+        warnings.append(
+            f"归一化基准已从 {TRAIN_SEQ_LEN} 扩到 {base_end} 点以覆盖目标年 "
+            f"{target_year}，与训练口径存在偏差。"
+        )
+
+    cio_min = float(np.min(base))
+    cio_max = float(np.max(base))
+    if abs(cio_max - cio_min) < 1e-12:
+        raise ValueError("CIO 数组为常数，无法执行 min-max 归一化")
+
+    normalized = (base - cio_min) / (cio_max - cio_min)
+    selected = normalized[start:start + N_STEPS].astype(np.float32, copy=False)
+
+    meta = {
+        "mode": mode,
+        "inputLength": int(arr.size),
+        "usedLength": int(base.size),
+        "preYear": pre_year,
+        "selectedRange": [start, start + N_STEPS],
+        # 目标年定位留痕（tasks 3.2）：`preYear`/`selectedRange` 保持原键不动，
+        # 新增的两个键只增不改 —— 前端契约按它们核对窗口。
+        "targetYear": target_year,
+        "windowStart": start,
+        "cioMin": cio_min,
+        "cioMax": cio_max,
+        "warning": " ".join(warnings) if warnings else None,
+    }
+    return selected, meta
+
+
+# ------------------------------------------------------- CIOmode .mat 资产
+
+def _mat_path() -> Path:
+    """每次调用时解析，便于测试用 CIOPROJ_MAT 指向沙盒里的夹具件。"""
+    override = os.environ.get("CIOPROJ_MAT")
+    return Path(override) if override else DEFAULT_MAT
+
+
+def _mat_meta() -> dict:
+    """校验 CIO 模态资产可用，返回来源描述。**位置 + 内容**双判据。
+
+    位置：路径是否落在被 `.MOCK_SANDBOX` 标记的模拟数据沙盒里（见 mock_sandbox）。
+      - 在沙盒里 → 必须是显式放行（`CIOPROJ_ALLOW_MOCK=1`）才可用，标 mock。
+      - 不在沙盒里 → 一律按"必须是真的"处理，**开开关也不放行**。
+
+    内容（沙盒外的件）：真件是正交模态矩阵，`e·eᵀ` 精确等于单位阵
+      （2026-09-15 对服务器真件实测偏差 4.2e-15）；夹具件 e 是随机数，
+      行范数 ~6e3 且互不正交（偏差 6.3e+03）。阈值 1e-6 隔了 9 个数量级。
+      注意**不要**再除以 e.shape[1]——那会把真件的 I 变成 I/6028，反而误判。
+
+    两条都必须"判不出来就报错"，绝不静默出结果。
+    """
+    path = _mat_path()
+    if not path.is_file():
+        raise ValueError(
+            f"缺少 CIO 模态资产 {path.name} —— 原始场投影必需。请把服务器上的 "
+            "原始件放到 backend/assets/ 下，或用环境变量 CIOPROJ_MAT 指定路径。"
+        )
+    try:
+        import scipy.io as sio
+
+        mat = sio.loadmat(str(path))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"读不了 CIO 模态资产 {path.name}: {exc!r}") from exc
+
+    if "e" not in mat:
+        raise ValueError(f"CIO 模态资产 {path.name} 里没有变量 e")
+    e = np.asarray(mat["e"], dtype=np.float64)
+    if e.ndim != 2 or e.shape != MAT_SHAPE:
+        raise ValueError(f"CIO 模态 e 形状 {e.shape}，期望 {MAT_SHAPE}")
+
+    gram = e @ e.T
+    deviation = float(np.max(np.abs(gram - np.eye(e.shape[0]))))
+
+    sandbox = mock_sandbox.find_root(path)
+    if sandbox is not None:
+        if not mock_sandbox.allow_flag_set():
+            raise ValueError(
+                f"CIO 模态资产 {path.name} 在模拟数据沙盒 {sandbox.name} 里 —— 那是 "
+                "make_mock.py 造的假数据，不对应任何真实观测。"
+                "正式跑请用服务器真件（backend/assets/ 或 摸库交付_2026-09-15/数据/）；"
+                f"确实要用它做联调，显式设 {mock_sandbox.ALLOW_ENV}=1。"
+            )
+        return {
+            "matSource": "mock",
+            "matPath": path.name,
+            "orthoDeviation": deviation,
+        }
+
+    # 沙盒外：必须是真的。ALLOW_MOCK 在这里不构成放行。
+    if deviation > MAT_ORTHO_TOL:
+        raise ValueError(
+            f"CIO 模态资产 {path.name} 不是服务器真件（e·eᵀ 偏离单位阵 {deviation:.3g} "
+            f"> {MAT_ORTHO_TOL:g}）。它也不在模拟数据沙盒里，所以 "
+            f"{mock_sandbox.ALLOW_ENV} 对它无效 —— 沙盒外的资产必须是真的。"
+            "假数据请放进带 .MOCK_SANDBOX 标记的目录。"
+        )
+    return {
+        "matSource": "real",
+        "matPath": path.name,
+        "orthoDeviation": deviation,
+    }
+
+
+# ------------------------------------------------------- 原始场 zip 入口
+
+def _resolve_kind(which: str, filename: str) -> tuple[str, str]:
+    """交接文档 §9.2：显式参数 > 文件名关键字；判不出就报错，绝不默认 U850。"""
+    which = (which or "").strip().lower()
+    if which in ("", "auto"):
+        return cioproj.detect_kind(filename), "filename"
+    if which not in ("u850", "sst", "both"):
+        raise ValueError(f"which 只能是 u850 / sst / both / auto，收到 {which!r}")
+    try:
+        guessed = cioproj.detect_kind(filename)
+    except ValueError:
+        return which, "explicit-param"
+    if guessed != which:
+        raise ValueError(
+            f"显式指定 which={which}，但文件名 {filename!r} 按关键字判为 {guessed}，"
+            "二者冲突；请改用 which=auto，或改文件名以消除歧义。"
+        )
+    return which, "explicit-param"
+
+
+def _zip_years(zip_path: Path) -> list[int]:
+    """从 zip 成员名推年份（不解压），用于同步校验与投影年份列表。"""
+    with zipfile.ZipFile(zip_path) as zf:
+        names = [
+            PurePosixPath(m.filename.replace("\\", "/")).name
+            for m in zf.infolist()
+            if not m.is_dir()
+        ]
+    years = sorted(
+        {int(m.group(1)) for n in names if (m := NC_YEAR_RE.search(n))}
+    )
+    if not years:
+        raise ValueError(
+            "zip 里的 nc 文件名认不出年份（期望 cesm.*.YYYYMM02-28days.nc）"
+        )
+    return years
+
+
+def _safe_extract_nc(zip_path: Path, dest: Path) -> int:
+    """把 zip 内的 .nc 扁平解压到 dest；拒绝穿越路径，限制文件数与总体积。"""
+    dest.mkdir(parents=True, exist_ok=True)
+    count = 0
+    total = 0
+    with zipfile.ZipFile(zip_path) as zf:
+        members = [
+            m for m in zf.infolist()
+            if not m.is_dir() and m.filename.lower().endswith((".nc", ".nc4"))
+        ]
+        if not members:
+            raise ValueError("zip 里没有 .nc 文件（应打包 5–9 月的逐日原始场）")
+        if len(members) > MAX_ZIP_FILES:
+            raise ValueError(
+                f"zip 内 .nc 文件 {len(members)} 个，超过上限 {MAX_ZIP_FILES}"
+            )
+        for member in members:
+            raw_name = member.filename.replace("\\", "/")
+            posix = PurePosixPath(raw_name)
+            if (
+                posix.is_absolute()
+                or ".." in posix.parts
+                or re.match(r"^[A-Za-z]:", raw_name)
+            ):
+                raise ValueError(f"zip 内含不安全路径：{member.filename!r}")
+
+            total += member.file_size
+            if total > MAX_NC_TOTAL_BYTES:
+                raise ValueError(
+                    "zip 解压后体积超过 %.1f GB 上限"
+                    % (MAX_NC_TOTAL_BYTES / 1024 ** 3)
+                )
+
+            target = dest / posix.name
+            if target.exists():
+                raise ValueError(f"zip 内有重名文件：{posix.name!r}")
+            with zf.open(member) as src, open(target, "wb") as out:
+                shutil.copyfileobj(src, out, length=1 << 20)
+            count += 1
+    return count
+
+
+def _locate_nc_dir(work_dir: Path) -> Path:
+    """find_nc_files 用非递归 glob，所以 nc 要么在顶层，要么在唯一子目录里。"""
+    if any(work_dir.glob("*.nc")):
+        return work_dir
+    subs = [
+        d for d in sorted(work_dir.iterdir())
+        if d.is_dir() and any(d.glob("*.nc"))
+    ]
+    if len(subs) == 1:
+        return subs[0]
+    if not subs:
+        raise ValueError("解压后找不到 .nc 文件（zip 里应打包 5–9 月逐日原始场）")
+    raise ValueError(
+        "解压后多个子目录都含 .nc，无法确定用哪个：%s" % [d.name for d in subs]
+    )
+
+
+def _zip_job_input(
+    content: bytes,
+    job_dir: Path,
+    lead: int,
+    which: str,
+    filename: str,
+    year: int,
+) -> tuple[dict, Callable[[Callable[[int, str], None]], tuple]]:
+    """同步校验 zip 入口（失败 → 调用方转 HTTP 400），返回 (投影元信息, prepare)。"""
+    zip_path = job_dir / "raw_fields.zip"
+    zip_path.write_bytes(content)
+    work_dir = job_dir / "raw"
+
+    kind, kind_source = _resolve_kind(which, filename)
+    if kind in ("sst", "both"):
+        cioproj.compute_cioproj(kind, name=filename)  # 直接抛 NotImplementedError
+    mat_meta = _mat_meta()
+
+    years = _zip_years(zip_path)
+    if year not in years:
+        raise ValueError(
+            f"zip 里没有 {year} 年的 nc（现有年份 {years[0]}–{years[-1]}）；"
+            f"模型 pre1/{year} 需要该年作为预测目标年。"
+        )
+
+    def prepare(report):
+        report(3, "正在解压原始气象场")
+        extracted = _safe_extract_nc(zip_path, work_dir)
+        nc_root = _locate_nc_dir(work_dir)
+        report(
+            8,
+            f"正在投影 CIO（{len(years)} 年 × 5 月，{extracted} 个 nc）",
+        )
+        series, proj = cioproj.compute_cioproj(
+            which=kind,
+            nc_dir=str(nc_root),
+            years=years,
+            lead=lead,
+            mat_path=str(_mat_path()),
+            name=filename,
+        )
+        report(26, "正在按训练口径归一化")
+        cio, normalization = _prepare_cio(series, pre_year=0)
+
+        projection = dict(mat_meta)
+        projection.update({
+            "inputKind": "raw-zip",
+            "requestedWhich": which or "auto",
+            "kind": proj.get("which", kind),
+            "kindSource": kind_source,
+            "lead": lead,
+            "window": proj.get("window"),
+            "years": proj.get("years", years),
+            "seriesLength": proj.get("length"),
+            "daysPerYear": proj.get("days_per_year"),
+            "missingMonths": proj.get("missing_months"),
+            "warning": proj.get("warning"),
+        })
+        return cio, normalization, projection
+
+    return {
+        "inputKind": "raw-zip",
+        "requestedWhich": which or "auto",
+        "kind": kind,
+        "kindSource": kind_source,
+        "lead": lead,
+        "window": cioproj.window(lead),
+        "years": years,
+        "matSource": mat_meta["matSource"],
+    }, prepare
+
+
+def _npy_job_input(content: bytes, job_dir: Path) -> tuple[dict, Callable]:
+    """同步校验 .npy 入口，返回 (归一化摘要, prepare)。"""
+    try:
+        raw = np.load(io.BytesIO(content), allow_pickle=False)
+        _cio, normalization = _prepare_cio(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"CIO 文件校验失败: {exc}") from exc
+
+    input_path = job_dir / "cio_input.npy"
+    np.save(input_path, np.asarray(raw), allow_pickle=False)
+
+    def prepare(report):
+        report(5, "正在读取并归一化 CIO 序列")
+        raw_now = np.load(input_path, allow_pickle=False)
+        cio, norm = _prepare_cio(raw_now, pre_year=normalization["preYear"])
+        return cio, norm, {"inputKind": "cio-npy"}
+
+    return normalization, prepare
+
+
+# ------------------------------------------------- 权重组目录源（多根 + 完整性）
+
+def _scan_group_directory(directory: Path) -> dict:
+    """`os.scandir` **单次**枚举拿文件数、字节和与坐标覆盖（design D2）。
+
+    实测 10 ms/组（8181 个条目），把"这组能不能做"从事后 30 分钟提前到受理时
+    十几毫秒。只统计**形状匹配**的成员：目录里若混进 README 之类不影响判定，
+    但少一个 `.pt` 或坐标不齐一定会被下面的三条判据之一抓到。
+    """
+    files = 0
+    total = 0
+    seen: set[tuple[int, int]] = set()
+    detail: list[str] = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            # 不跟随符号链接：链接指出去的"权重"不属于这一组
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            match = GROUP_MEMBER_RE.match(entry.name)
+            if match is None:
+                continue
+            index, column = int(match.group(1)), int(match.group(2))
+            files += 1
+            total += entry.stat(follow_symlinks=False).st_size
+            if not (0 <= index < GRID_ROWS and 0 <= column < GRID_COLS):
+                detail.append(f"越界 {entry.name}")
+                continue
+            if (index, column) in seen:
+                detail.append(f"重复 ({index}, {column})")
+                continue
+            seen.add((index, column))
+
+    problem = None
+    if files != GROUP_FILE_COUNT:
+        problem = f"该组权重不完整（{files}/{GROUP_FILE_COUNT} 个文件）"
+    elif len(seen) != GRID_ROWS * GRID_COLS:
+        # 数量凑对了但格点盖不满（重复或越界）—— "跨组混装/中断后凑回原值"
+        # 的典型形态，只看数量与字节和抓不到（design D2 的 C 案）。
+        problem = ("该组权重格点未全覆盖（%d/%d 个坐标，异常 %d 个：%s）"
+                   % (len(seen), GRID_ROWS * GRID_COLS, len(detail),
+                      "；".join(detail[:3])))
+    elif total != GROUP_TOTAL_BYTES:
+        problem = f"该组权重字节数不符（{total} != {GROUP_TOTAL_BYTES}）"
+    return {"files": files, "bytes": total, "problem": problem}
+
+
+def resolve_model_group(lead: str, year: int) -> dict:
+    """**唯一**的权重组解析入口（design D1/D4）：清单端点与受理口共用它。
+
+    按 `MODEL_ROOTS` 顺序取**第一个完整**的组目录：某根上目录**不存在**、或
+    **存在但未通过三项守卫**时，都继续试后续根；命中一个完整根后**只读该组**，
+    不合并多根。（"第一个存在目录胜出"会把半截副本当成"有这一组"，与项目真值
+    脚本 `verify_local_archive.py` 的"只要有一份完整就算完整"给出相反答案。）
+
+    返回组描述符；**不可用不抛异常**：外部盘掉线、权限不足、目录半截都只是
+    "该组合不可用＋原因"，不得冒泡成 5xx（R6/D11）。`directory` 是唯一的内部字段
+    （绝对路径），清单一律不带它出去。
+
+    `(pre1, 2000)` 标记 `source="archive"`：走冻结的 tar 归档分支，**不**参与目录
+    枚举（tar 用不了同一套目录判据，design D3）。**归档优先级无条件高于任何目录根**：
+    外置盘上那份同名目录**永远不被读取**（已知且有意的冗余 —— 该组合的价值正是
+    "不随盘面变化"）。
+
+    **全部根都未命中时** `reason` 按三档优先级取值（D8，规格 :251）：
+    ①某根上目录存在但未通过守卫（含实测文件数）＞②**根不可用**（盘符消失/未挂载/
+    根目录不存在，或访问时抛 `OSError`，附异常类名）＞③所有根上目录都不存在。
+    两个槽分别只写不覆盖（`specific` 收 ①、`unreach` 收 ②），收尾按 ①＞②＞③ 取 ——
+    若共用一个槽、每轮无条件覆盖，走到最后只会剩**最后一个失败根**的文案
+    （典型是"未找到"），等于用"未找到"掩盖"存在但半截"这一更具体的状态；
+    分两槽还保证"后一根的不可达"不会盖掉"前一根的半截"。
+
+    ⚠ **②的"根不可用"必须单独探测根目录本身**：盘符消失 / 外置盘未挂载时
+    `directory.is_dir()` 只返回 `False`（不抛，见下），与"这个根上确实没有这一组"
+    **同解** ⇒ 掉盘会伪装成"未找到该组权重目录"，运维看不出是盘没插。
+    （2026-09-26 按 PM 指示补，`pre1/2000` 等归档项不受影响。）
+
+    ⚠ **不声称"受理通过就能跑完"**：推理入口在执行期还有**第三次**解析
+    （`_run_archive_inference`），届时目录若已变化，任务会在执行期失败。这是既有
+    语义，本变更不改变它。
+    """
+    descriptor = {
+        "lead": lead, "year": year, "available": False, "reason": None,
+        "source": None, "files": 0, "bytes": 0, "directory": None,
+    }
+    if lead == FROZEN_LEAD and year == FROZEN_YEAR:
+        descriptor.update(source="archive", available=True)
+        return descriptor
+    if LEAD_RE.match((lead or "").strip()) is None:
+        descriptor["reason"] = f"lead 格式非法：{lead!r}（应为 preN，如 pre3）"
+        return descriptor
+
+    # 只写不覆盖（D8），两个槽：`specific` 收 ①（存在但不完整），`unreach` 收 ②
+    # （根不可用/不可访问）。收尾按 ①＞②＞③ —— 见 docstring 的三档优先级。
+    specific = {"reason": None}
+    unreach = {"reason": None}
+
+    def record_once(message: str) -> None:
+        if specific["reason"] is None:
+            specific["reason"] = message
+
+    def record_root_down(message: str) -> None:
+        if unreach["reason"] is None:
+            unreach["reason"] = message
+
+    for root in MODEL_ROOTS:
+        directory = Path(root) / lead / str(year)
+        # 布局守卫：目录由**已校验的入参**拼成，末两段必须恰为 `{lead}/{year}`，
+        # 不递归、不跟随符号链接（否则"这一组的身份"就不可证了）。
+        if tuple(directory.parts[-2:]) != (lead, str(year)):
+            record_once(f"模型根布局不符（末两段不是 {lead}/{year}）")
+            continue
+        # ⚠ 整个根体都在 `try` 内（D11）：**所有**触碰文件系统的判定 —— 存在性
+        # 探测、取 `mtime` 的 `stat`、`os.scandir` 枚举 —— 共用同一条异常通道。
+        # `pathlib` 的 `is_dir()` 只吞 ENOENT/ENOTDIR/EBADF/ELOOP，权限类
+        # `OSError`（EACCES）会一路冒到端点 ⇒ 整份清单 500 ⇒ 前端落写死的 1 组
+        # 且本会话不重试。注意：**盘符不存在时 `is_dir()` 返回 False 而不抛**，
+        # 所以"指向不存在路径"的夹具永远到不了这个分支 —— 它是另一个分支。
+        try:
+            # 根级探活（2026-09-26 按 PM 指示补）：盘符消失 / 外置盘未挂载 / 根目录被
+            # 改名时，下面那句 `directory.is_dir()` 只返回 `False`（不抛）⇒ 与"这个根上
+            # 确实没有这一组"**同解**，掉盘会伪装成"未找到该组权重目录"，运维看不出是
+            # 盘没插。先探根目录本身，把"根不可用"与"根可用但无此组"分开。
+            if not Path(root).is_dir():
+                record_root_down("模型根不可达（未挂载或根目录不存在）")
+                logger.info("权重组 %s/%s：根 %s 不可达（未挂载或根目录不存在）",
+                            lead, year, root)
+                continue
+            if not directory.is_dir():
+                continue
+            mtime_ns = directory.stat().st_mtime_ns
+            scanned = _scan_group_cached(directory, mtime_ns)
+        except OSError as exc:
+            # 外部根掉线 / 权限不足。文案**只带异常类名**：
+            # `str(OSError)` 通常含绝对路径，而它会进响应（R3）。
+            record_root_down(f"模型根不可访问（{type(exc).__name__}）")
+            logger.info("权重组 %s/%s：跳过不可访问的根 %s（%s）",
+                        lead, year, root, type(exc).__name__)
+            continue
+        if scanned["problem"] is not None:
+            # 跳过前**先落因**（D8）：先 continue 再想记录就晚了。
+            record_once(scanned["problem"])
+            logger.info("权重组 %s/%s：跳过不完整的根 %s（%s）",
+                        lead, year, root, scanned["problem"])
+            continue
+        descriptor.update(directory=directory, files=scanned["files"],
+                          bytes=scanned["bytes"], source="dir")
+        descriptor["available"] = True
+        return descriptor
+
+    descriptor["reason"] = (specific["reason"] or unreach["reason"]
+                            or "未找到该组权重目录")
+    return descriptor
+
+
+def list_model_groups() -> list[dict]:
+    """可用组合清单（AC1/AC3）：**逐组**调 `resolve_model_group`，网格恒 400 项。
+
+    严禁"先列全部目录再筛"：外部根可能整个不存在，列目录要么先炸要么先慢。
+    返回项**不含磁盘路径**；`available` 是唯一权威的可选判据，`files`/`bytes`
+    只作展示（实测每组完整权重的这两个值都一样，自己算不出来"可用"）。
+
+    **每个 lead 的 `years` 恒 20 项、绝不为空数组**：消费方 `isValidModelCatalog`
+    是 all-or-nothing，空数组会让整份清单被判非法。`pre1/2000` 的
+    `source="archive"` 由 `resolve_model_group` 的归档短路给出，**此处不写特例**。
+
+    耗时结构（AC6）：每请求只做 400 × 每根 1–2 次**廉价**存在性探测 + 取 `mtime`
+    （`is_dir` 与 `stat` 都不缓存 ⇒ 拔盘/恢复在下一个请求即反映）；昂贵的**内容
+    扫描**走 `_scan_group_cached`。**本函数不因 TTL 而重扫任何一组**。
+    """
+    catalog = []
+    for lead in GROUP_LEADS:
+        items = []
+        for year in GROUP_YEARS:
+            group = resolve_model_group(lead, year)
+            item = {
+                "year": int(year),
+                "available": bool(group["available"]),
+                "files": int(group["files"]),
+                "bytes": int(group["bytes"]),
+                # 候选网格里除 `pre1/2000`（archive）之外都是目录权重；不可用且
+                # 未命中任何根时按 "dir" 报，前端**不要**用它反推 available。
+                "source": group["source"] or "dir",
+            }
+            if not item["available"]:
+                item["reason"] = group["reason"] or "该组合不可用"
+            items.append(item)
+        catalog.append({"lead": lead, "years": items})
+    return catalog
+
+
+# ------------------------------------------------- 扫描缓存 / 落盘清单 / 预热（D5–D7）
+
+# 缓存边界落在"内容扫描"上：定位（`is_dir`）与取 `mtime` 都**免费**
+# （0.0–0.1 ms），内容扫描**贵**（19–29 ms 热 / 数百 ms 冷，实测外置盘冷态下
+# 单组可达数百毫秒）。所以缓存只覆盖后者 —— 这也是"掉盘在下一个请求即反映"
+# 的原因：存在性探测从未被缓存。
+# 值 = `(扫描结论 dict, 本次扫描时刻)`；结论 dict 恒为 `files/bytes/problem`
+# 三键（与 `_scan_group_directory` 逐字段相同）。条目**整体原子发布**（写值即
+# 整条替换），读者不可能看到"半写"的条目。
+_scan_cache: dict[tuple[str, int], tuple[dict, float]] = {}
+_scan_cache_lock = threading.Lock()
+
+
+def _scan_cache_clear() -> int:
+    """清空扫描缓存，返回清掉的条数（诊断/测试用）。"""
+    with _scan_cache_lock:
+        count = len(_scan_cache)
+        _scan_cache.clear()
+    return count
+
+
+def _scan_cache_size() -> int:
+    with _scan_cache_lock:
+        return len(_scan_cache)
+
+
+def _scan_group_cached(directory: Path, mtime_ns: int, *,
+                       force: bool = False) -> dict:
+    """`_scan_group_directory` 的**记忆化**（D5）。键 = `(目录, 目录 mtime_ns)`。
+
+    **锁粒度（C004，必须保持）**：查表持锁 → 未命中**先释放锁**再扫 → 再持锁
+    **整条原子发布**。绝不在持锁期间 `os.scandir`：一次清单请求会 touch 全部
+    400 个键，持锁扫描等于把缓存降级成全局串行锁（冷盘下比不缓存还慢），
+    并把本变更想消灭的延迟原样搬回来。并发下同一组可能被重复扫一次 ——
+    可接受代价，**不得**为省这一次扫描去加长持锁。
+
+    **`stat` 不在这里做**：`mtime_ns` 由调用方（`resolve_model_group`）在它自己
+    那条 `try/except OSError` 内取好传进来。缓存层若自己裸调 `stat`，权限类
+    `OSError` 会绕过 D11 的转换通道，把整份清单打成 500。
+
+    **未命中必须真扫**（AC7）：不得用邻近组结果、上一次结果或任何猜测值代替 ——
+    这直接决定"清单 `available` ⇔ 受理口放行"。命中与未命中的返回值**逐字段相同**。
+
+    `force=True` 只给**请求路径之外**的 TTL 轮次用（`run_scan_round`）：mtime 没变
+    时键相同、否则会命中缓存而不真扫，那样"周期重扫"就成了空转的死参数。
+    """
+    key = (str(directory), int(mtime_ns))
+    if not force:
+        with _scan_cache_lock:
+            hit = _scan_cache.get(key)
+        if hit is not None:
+            return dict(hit[0])           # 浅拷贝：调用方拿不到缓存内的对象
+    scanned = _scan_group_directory(directory)      # ← 锁已释放
+    record = {
+        "files": int(scanned["files"]),
+        "bytes": int(scanned["bytes"]),
+        "problem": scanned["problem"],
+    }
+    with _scan_cache_lock:
+        _scan_cache[key] = (record, time.time())    # 整条原子发布
+    return dict(record)
+
+
+def model_roots_fingerprint() -> str:
+    """当前 `MODEL_ROOTS` 的稳定摘要（**顺序敏感**）。
+
+    落进 manifest 的**文件名**，使两个以不同根列表运行的进程（`8001` fold1 /
+    `8002` foldmax 用 env 覆盖成不同根）各自独立：内容里的指纹只能事后发现
+    "这份不是我的"，文件名指纹则**根本不会写到一起**（不互相覆盖）。
+    用摘要而不是原始路径做文件名 —— 路径含 `:` / `\\` / 中文，不是合法文件名。
+    """
+    joined = "\x00".join(str(p) for p in MODEL_ROOTS)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def model_scan_manifest_path() -> Path:
+    return Path(MODEL_SCAN_MANIFEST_DIR) / (
+        "model_scan_manifest_%s.json" % model_roots_fingerprint()
+    )
+
+
+def write_model_scan_manifest() -> "Path | None":
+    """把当前逐组扫描结论**原子写入**落盘清单（D6）。成功返回路径，失败返回 None。
+
+    条目 schema 固定为五元组 `(组目录, st_mtime_ns, files, bytes, problem)` ——
+    与缓存键同源。**落盘清单不是免检通道**：加载时逐条以当前 `st_mtime_ns` 复核，
+    它受的约束与请求路径的 `mtime` 键完全相同（否则它会变成绕过守卫的第二判据，
+    直接破坏 AC7 的"同一谓词"）。
+
+    **只在请求路径之外调用**（`prewarm_model_groups` / 周期轮次）：请求路径写盘
+    会让每次 `/models` 都落一个文件，也会让测试套件往**真实** `backend/uploads/`
+    写东西（C-4）。
+    """
+    with _scan_cache_lock:
+        snapshot = list(_scan_cache.items())
+    try:
+        path = model_scan_manifest_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "fingerprint": model_roots_fingerprint(),
+            "roots": [str(p) for p in MODEL_ROOTS],
+            "entries": [
+                [key[0], int(key[1]), record["files"], record["bytes"],
+                 record["problem"]]
+                for key, (record, _seen) in snapshot
+            ],
+        }
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)               # 原子替换：读者要么看到旧的整份，要么新的整份
+        return path
+    except OSError as exc:
+        logger.warning("落盘扫描清单失败（不影响服务）：%s", exc)
+        return None
+
+
+def load_model_scan_manifest() -> int:
+    """按指纹读取落盘清单并**逐条复核**后填入缓存，返回采纳条数。
+
+    - 路径按**当前**根的指纹取，内容里的指纹与根序列再校一次 ⇒ 不同根列表的
+      结论**根本不会被套用**（不是"事后发现"，而是读不到）。
+    - 每条以**当前** `st_mtime_ns` + `is_dir` 现查：不一致的**单条**丢弃并留待
+      真扫，其余条目照旧复用 —— **一条不一致绝不判整份清单无效**。
+    - 调用时机在启动/请求路径之外（`prewarm_model_groups` 的第一步）。
+    """
+    try:
+        raw = json.loads(model_scan_manifest_path().read_text("utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(raw, dict):
+        return 0
+    if raw.get("fingerprint") != model_roots_fingerprint():
+        return 0
+    if [str(p) for p in MODEL_ROOTS] != list(raw.get("roots") or []):
+        return 0
+    entries = raw.get("entries")
+    if not isinstance(entries, list):
+        return 0
+
+    now = time.time()
+    adopted = 0
+    for item in entries:
+        if not isinstance(item, list) or len(item) != 5:
+            continue
+        directory, mtime_ns, files, total, problem = item
+        try:
+            path = Path(directory)
+            if not path.is_dir():
+                continue
+            if int(path.stat().st_mtime_ns) != int(mtime_ns):
+                continue
+            record = {
+                "files": int(files),
+                "bytes": int(total),
+                "problem": None if problem is None else str(problem),
+            }
+        except (OSError, TypeError, ValueError):
+            continue
+        with _scan_cache_lock:
+            _scan_cache[(str(path), int(mtime_ns))] = (record, now)
+        adopted += 1
+    return adopted
+
+
+def run_scan_round(now: "float | None" = None) -> int:
+    """**请求路径之外**的一轮 TTL 重扫（D5/C006）。返回本轮真正重扫的组数。
+
+    挑出"自上次扫描起超过 `MODEL_SCAN_TTL`"的条目重扫，单轮至多
+    `MODEL_SCAN_BUDGET` 条。**K 为正整数语义**：`K <= 0` 时仍**至少重扫 1 条**
+    （`max(1, K)`）—— "从不重扫"与"只在启动时预热一次"同属死参数，不算满足（C009）。
+
+    ⚠ 这是**唯一**会因 TTL 而重扫的地方。请求路径**不看 TTL**：`list_model_groups()`
+    一次请求就 touch 全部 400 个键，"过期即真扫"会把首次响应延迟从"启动后"搬到
+    "空闲 TTL 后"；而三项守卫只证**形状**、成员被就地改写本就检不出来 ⇒ 收益≈0、
+    代价=周期性全网格真扫（成本收益倒挂，见 design D5）。
+    """
+    ttl = float(MODEL_SCAN_TTL)
+    budget = max(1, int(MODEL_SCAN_BUDGET))
+    stamp = time.time() if now is None else float(now)
+    with _scan_cache_lock:
+        stale = [(key, record) for key, (record, seen) in _scan_cache.items()
+                 if stamp - seen >= ttl]
+    stale.sort(key=lambda pair: pair[0])            # 稳定顺序（先老先扫）
+    rescanned = 0
+    for (path_key, _mtime_ns), _record in stale[:budget]:
+        directory = Path(path_key)
+        try:
+            if not directory.is_dir():
+                continue
+            current = int(directory.stat().st_mtime_ns)
+            _scan_group_cached(directory, current, force=True)   # 真扫并刷新时刻
+        except OSError as exc:
+            logger.info("TTL 重扫跳过不可访问的组 %s（%s）",
+                        path_key, type(exc).__name__)
+            continue
+        rescanned += 1
+    return rescanned
+
+
+# 后台扫描的可观测面（"可中断/可观测"是硬要求，不该只靠日志）。
+_bg_stats = {
+    "rounds": 0, "rescanned": 0, "round_sizes": [], "prewarms": 0,
+    "adopted": 0, "lastScanSeconds": None, "lastAborted": None,
+}
+_prewarm_lock = threading.Lock()
+_bg_thread: "threading.Thread | None" = None
+_bg_stop = threading.Event()
+
+
+def background_scan_stats() -> dict:
+    """后台扫描的可观测面（读快照，不返回内部对象）。"""
+    return {
+        "rounds": _bg_stats["rounds"],
+        "rescanned": _bg_stats["rescanned"],
+        "round_sizes": list(_bg_stats["round_sizes"]),
+        "prewarms": _bg_stats["prewarms"],
+        "adopted": _bg_stats["adopted"],
+        "lastScanSeconds": _bg_stats["lastScanSeconds"],
+        "lastAborted": _bg_stats["lastAborted"],
+        "ttl": float(MODEL_SCAN_TTL),
+        "budget": int(MODEL_SCAN_BUDGET),
+        "prewarm": bool(MODEL_PREWARM),
+    }
+
+
+def active_background_scan_thread() -> "threading.Thread | None":
+    thread = _bg_thread
+    return thread if thread is not None and thread.is_alive() else None
+
+
+def prewarm_model_groups(stop_event=None) -> dict:
+    """遍历候选网格填缓存并刷新落盘清单（D6/D7）。
+
+    顺序：先按指纹读 manifest（能复用就不重扫）→ 逐格解析补漏 → 落盘。
+    **串行**（不并发打同一块外置盘，R10）、**可中断**（`stop_event`，且单组耗时
+    超过 `MODEL_SCAN_STALL_LIMIT` 即中止本轮并记账）、**异常不冒泡**（后台线程里
+    冒泡等于把服务错误面拉进来）。
+    """
+    stop = stop_event if stop_event is not None else _bg_stop
+    started = time.time()
+    adopted = load_model_scan_manifest()
+    scanned = 0
+    aborted = None
+    for lead in GROUP_LEADS:
+        if stop.is_set():
+            aborted = "stop-flag"
+            break
+        for year in GROUP_YEARS:
+            if stop.is_set():
+                aborted = "stop-flag"
+                break
+            mark = time.time()
+            try:
+                resolve_model_group(lead, year)
+            except Exception as exc:        # noqa: BLE001 单组异常不得终止整轮
+                logger.warning("预热单组失败 %s/%s（已跳过）：%s", lead, year, exc)
+                continue
+            scanned += 1
+            spent = time.time() - mark
+            if spent > float(MODEL_SCAN_STALL_LIMIT):
+                # 事后判定（不能抢占阻塞中的系统调用，别称它是硬超时）
+                logger.warning(
+                    "预热单组 %s/%s 耗时 %.1f s 超过保底阈值 %.0f s ⇒ 中止本轮"
+                    "（外置盘掉速/休眠）",
+                    lead, year, spent, float(MODEL_SCAN_STALL_LIMIT),
+                )
+                aborted = "stall"
+                break
+        if aborted is not None:
+            break
+
+    manifest = None if aborted is not None else write_model_scan_manifest()
+    elapsed = time.time() - started
+    _bg_stats["prewarms"] += 1
+    _bg_stats["adopted"] = adopted
+    _bg_stats["lastScanSeconds"] = round(elapsed, 2)
+    _bg_stats["lastAborted"] = aborted
+    logger.info(
+        "权重组预热%s：落盘结论采纳 %d 条，遍历 %d 格，耗时 %.1f s，manifest=%s",
+        "（已中止：%s）" % aborted if aborted else "", adopted, scanned,
+        elapsed, manifest,
+    )
+    return {"adopted": adopted, "scanned": scanned, "seconds": round(elapsed, 2),
+            "aborted": aborted, "manifest": None if manifest is None else str(manifest)}
+
+
+def _background_scan_loop() -> None:
+    """后台执行体：**先预热一轮**，随后按 `MODEL_SCAN_TTL` 间隔跑**周期轮次**。
+
+    周期轮次是 PM 确认的 300 s 兜底**唯一的载体**（C006）：只有"启动时预热一次"
+    的话，启动瞬间刚写入、没有任何条目会"超过 TTL" ⇒ 那个参数会变成**永不生效的
+    死参数**，连"TTL 过期后重扫"这条验收都不可判定。所以轮次必须真的在跑。
+    `MODEL_PREWARM=0` ⇒ 本线程根本不会被创建（预热与周期轮次都没有）。
+    """
+    try:
+        prewarm_model_groups(_bg_stop)
+    except Exception as exc:                # noqa: BLE001 后台线程绝不把错误抛给服务
+        logger.warning("预热异常（已吞，不影响服务）：%s", exc)
+    while not _bg_stop.wait(max(0.05, float(MODEL_SCAN_TTL))):
+        mark = time.time()
+        try:
+            rescanned = run_scan_round()
+        except Exception as exc:            # noqa: BLE001
+            logger.warning("周期重扫异常（已吞）：%s", exc)
+            continue
+        _bg_stats["rounds"] += 1
+        _bg_stats["rescanned"] += rescanned
+        _bg_stats["round_sizes"].append(rescanned)
+        logger.info("权重组周期重扫：本轮 %d 条（预算 K=%s），耗时 %.2f s",
+                    rescanned, MODEL_SCAN_BUDGET, time.time() - mark)
+        try:
+            write_model_scan_manifest()
+        except Exception as exc:            # noqa: BLE001
+            logger.warning("周期落盘清单失败（已吞）：%s", exc)
+
+
+def start_background_model_scan() -> "threading.Thread | None":
+    """启动预热/周期线程并**立即返回**（D7）。已有一条在跑 ⇒ 返回它（单飞）。
+
+    **调用方必须立即返回**：FastAPI 的 `startup` 钩子在服务开始接受连接**之前**
+    完成，内联执行等于把规格里"预热 SHALL NOT 阻断服务启动"直接推翻（C005 ——
+    所援引的先例 `main.py` 的 `verify_dataset_on_startup` 恰是**同步内联**，
+    别照抄它的形态）。`MODEL_PREWARM=0` ⇒ 不起线程。
+
+    ⚠ **调用点只能是服务启动钩子**，绝不能是本模块的导入期：测试套件 `import`
+    就会对外置盘做全网格扫描，而测试会猴补 `MODEL_ROOTS`（D7）。
+    """
+    global _bg_thread
+    if not MODEL_PREWARM:
+        return None
+    with _prewarm_lock:
+        alive = active_background_scan_thread()
+        if alive is not None:
+            return alive                    # 单飞：同一时刻只有一个预热在跑
+        _bg_stop.clear()
+        thread = threading.Thread(target=_background_scan_loop,
+                                  name="model-scan-prewarm", daemon=True)
+        _bg_thread = thread
+        thread.start()
+    logger.info("权重组后台扫描线程已启动（MODEL_SCAN_TTL=%ss，预算 K=%s）",
+                MODEL_SCAN_TTL, MODEL_SCAN_BUDGET)
+    return thread
+
+
+def stop_background_model_scan(timeout: float = 5.0) -> bool:
+    """请求停止后台扫描并等待收工（测试/优雅关停用）。返回是否已停下。"""
+    _bg_stop.set()
+    thread = _bg_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout)
+    return not (thread is not None and thread.is_alive())
+
+
+# ------------------------------------------------- 权重组加载（两条分支共用循环）
+
+def _iter_archive_members():
+    """归档分支的枚举 seam：产出 `(i, j, 权重字节, 成员名)`。
+
+    成员名原样透出（错误文案与变更前逐字一致）。
+    """
+    with tarfile.open(MODEL_ARCHIVE, mode="r|gz") as archive:
+        for member in archive:
+            if not member.isfile() or not member.name.endswith(".pt"):
+                continue
+            match = MODEL_NAME_RE.search(member.name.replace("\\", "/"))
+            if not match:
+                continue
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise RuntimeError(f"无法读取模型: {member.name}")
+            yield int(match.group(1)), int(match.group(2)), stream.read(), member.name
+
+
+def _iter_directory_members(directory: Path, lead: str, year: int):
+    """目录分支的枚举 seam：产出 `(i, j, 权重字节, 标签)`。
+
+    标签用**相对**路径（`{lead}/{year}/{name}`）：错误文案会进响应，
+    绝对路径不上（R3）。
+    """
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            match = GROUP_MEMBER_RE.match(entry.name)
+            if match is None:
+                continue
+            yield (int(match.group(1)), int(match.group(2)),
+                   Path(entry.path).read_bytes(),
+                   f"{lead}/{year}/{entry.name}")
+
+
+def _build_model(torch, checkpoint: dict):
+    """依据 checkpoint 元数据构造与 src/src/model.py 一致的网络。"""
+    nn = torch.nn
+    input_size = int(checkpoint.get("input_size", 1))
+    hidden_size = int(checkpoint.get("hidden_size", 60))
+    num_layers = int(checkpoint.get("num_layers", 2))
+    dropout = float(checkpoint.get("dropout", 0.2))
+
+    class RNN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0.0,
+                num_layers=num_layers,
+            )
+            self.linear1 = nn.Linear(hidden_size, 30)
+            self.relu1 = nn.ReLU(inplace=True)
+            self.linear2 = nn.Linear(30, 15)
+            self.relu2 = nn.ReLU(inplace=True)
+            self.linear3 = nn.Linear(15, 1)
+
+        def forward(self, x):
+            x, _ = self.lstm(x)
+            x = self.relu1(self.linear1(x))
+            x = self.relu2(self.linear2(x))
+            return self.linear3(x)
+
+    return RNN()
+
+
+class _permanent_safe_globals:
+    """装上就**永不摘除**的 `torch.serialization.safe_globals` 等价物。
+
+    **为什么不能用 torch 自带的那一个（B-8，2026-09-21 定为 open P0）**：
+    `torch.serialization.safe_globals` 的 `__exit__` 无条件执行
+    `_remove_safe_globals(self.safe_globals)`，而底层
+    `torch._weights_only_unpickler._marked_safe_globals_set` 是**进程级单例**、
+    **没有引用计数**。本模块把整个 8181 循环包在它的 `with` 里，而同一个 uvicorn
+    进程里可以并发跑两个任务（新链 `chain.py` 与旧路由各自 `max_workers=1`，
+    但**共享一个进程**）—— **先退出的那个会把
+    `numpy._core.multiarray.scalar` 从全局集合里摘掉**，另一个还在循环里，
+    于是 `torch.load` 跑到一半抛 `UnpicklingError`。
+    实测（`.harness/tmp/site-chain/test4/b8_repro_integration.py`，B 落后 A 15 秒
+    启动）：B 崩在 **5500/8181**，traceback 落在下面的 `torch.load`。
+
+    ⚠ **不要"把 `with` 收窄到只包住 `torch.load`"** —— 那只是把 60 秒的竞争
+    窗口缩成几毫秒，**竞争依然存在，只是更难撞上**；而"跑一百次好一次坏"恰好是
+    事后最难发现的那类 bug，答辩现场撞一次就是事故。
+    本类的做法是把"摘除"这一步**整个去掉**：
+    `torch.serialization.add_safe_globals()` 底层是并集运算
+    （`_marked_safe_globals_set = _marked_safe_globals_set.union(...)`），幂等；
+    装上去之后**进程内没有任何路径会摘掉它**，全局集合单调不减 → 并发退出摘不掉
+    别人的 allowlist → **竞争消除**。这是单调性论证，与线程调度时序无关，
+    不像"收窄窗口"那样只是把概率调小。另：别的库若用自带 CM 装自己的类型，
+    其 `__exit__` 也只摘**它自己列的那几个**，摘不到这 4 个。
+
+    **代价（进程级永久放行，已评估接受）**：这 4 个类型是
+    `numpy._core.multiarray.scalar` / `np.dtype` / `np.dtype[float64]` /
+    `np.dtype[float32]` —— **都是数据类型，不是可调用对象**，反序列化它们不产生
+    任意代码执行。且本仓库**没有任何"载入不可信 pickle"的路径**：`MODEL_ARCHIVE`
+    是本地固定资产，用户上传走 `.nc`（`.zip` 解压后）与
+    `np.load(..., allow_pickle=False)`，都不经过 `torch.load`。
+    """
+
+    def __init__(self, torch_module, types):
+        self._torch = torch_module
+        self._types = list(types)
+
+    def __enter__(self):
+        # 幂等：重复进入只是再做一次并集，不产生副作用。
+        self._torch.serialization.add_safe_globals(self._types)
+        return self
+
+    def __exit__(self, *_exc):
+        return False        # 故意**不**摘除 —— 理由见类文档
+
+
+def _run_archive_inference(
+    cio: np.ndarray,
+    progress_callback=None,
+    span: tuple[int, int] = (3, 95),
+    *,
+    lead: str = FROZEN_LEAD,
+    year: int = FROZEN_YEAR,
+) -> np.ndarray:
+    """按权重组逐格点执行前向推理。
+
+    `span` 是进度条区间：投影阶段占掉前面一段，推理从 span[0] 推到 span[1]。
+
+    **两条分支**（design D3/D9）：
+
+    * 不传 `lead`/`year`（旧路由 `/api/predict/jobs` 与 `/api/cio`，以及 `chain.py`
+      里任何未接线的调用点）⇒ 默认 `pre1/2000`，走既有的 tar 归档流式读 ——
+      这是**回归基线**，8181 加载与前向口径逐位不变。
+    * 传了 ⇒ 按 `resolve_model_group` 解析：`pre1/2000` 仍走归档，其余组合走目录
+      源。两条分支**共用**同一个内层循环（`torch.load` → `_build_model` →
+      `load_state_dict(strict=True)` → `eval` → `inference_mode` → `nan_to_num` →
+      负值置 0 → 反归一化 → 进度），禁止复制两份前向代码。
+
+    ⚠ 默认值只保证"旧路由不传即冻结"。**新路径必须靠调用点显式接线**（`chain.py`
+    的 `_run_stage3` 传 `lead=`/`year=`）：单靠默认值的话，漏传会**静默回退**到
+    pre1/2000 —— 受理过了、窗口也对了、任务 completed，实际却用别组的权重去算 r。
+    这正是本变更要消灭的静默错数的新形态，所以目录分支内还有一道组标识交叉断言。
+    """
+    group = None
+    if lead == FROZEN_LEAD and year == FROZEN_YEAR:
+        if not MODEL_ARCHIVE.is_file():
+            # 三参形式：单参 `FileNotFoundError(f"...{MODEL_ARCHIVE}")` 的
+            # `.filename` 是 None，`_safe_exc` 会走 else 原样吐出绝对路径（这个
+            # error 串前端上屏，R3-4）。填了 filename 才让总闸真正生效。
+            raise FileNotFoundError(
+                errno.ENOENT, "模型压缩包不存在", str(MODEL_ARCHIVE)
+            )
+    else:
+        group = resolve_model_group(lead, year)
+        if not group["available"]:
+            # 缺件错误保持**三参**形式：第三参给该组目录（未命中任何根时给按布局
+            # 拼出的"本该在那儿"的路径）。`.filename` 一填，`_safe_exc` 就只透出
+            # basename，绝对路径不上响应。
+            if group["directory"] is not None:
+                missing_path = group["directory"]
+            elif MODEL_ROOTS:
+                missing_path = Path(MODEL_ROOTS[0]) / lead / str(year)
+            else:                                 # 根列表为空：只能给相对形状
+                missing_path = Path(lead) / str(year)
+            raise FileNotFoundError(
+                errno.ENOENT,
+                group["reason"] or "该组权重不可用",
+                str(missing_path),
+            )
+        # 交叉断言（tasks 2.6）：实际加载的组标识 == 请求的 (lead, year)。
+        if group["lead"] != lead or group["year"] != year:
+            raise RuntimeError(
+                "权重组标识不一致：请求 %s/%s，实际解析到 %s/%s"
+                % (lead, year, group["lead"], group["year"])
+            )
+
+    # 当前 Windows/Anaconda 环境的 NumPy 与 PyTorch 可能各自携带 OpenMP。
+    # 这是本地验证兼容设置；后续部署应统一运行时依赖后移除。
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("后端未安装 PyTorch，请执行 pip install torch") from exc
+
+    try:
+        from numpy._core.multiarray import scalar as numpy_scalar
+    except ImportError:  # NumPy < 2
+        from numpy.core.multiarray import scalar as numpy_scalar
+
+    safe_types = [
+        numpy_scalar,
+        np.dtype,
+        type(np.dtype("float64")),
+        type(np.dtype("float32")),
+    ]
+
+    torch.set_num_threads(max(1, min(4, os.cpu_count() or 1)))
+    input_tensor = torch.from_numpy(cio).reshape(1, -1, 1)
+    prediction = np.full(
+        (GRID_ROWS, GRID_COLS, cio.size), np.nan, dtype=np.float32
+    )
+    seen: set[tuple[int, int]] = set()
+    processed = 0
+
+    if progress_callback:
+        progress_callback(
+            span[0],
+            "正在打开模型压缩包" if group is None
+            else f"正在读取权重目录 {lead}/{year}",
+        )
+
+    # ⚠ 为什么不是 `with torch.serialization.safe_globals(safe_types)`：见上面
+    # `_permanent_safe_globals` 的类文档（B-8：那个 CM 退出时无条件摘除全局
+    # allowlist，并发双任务必挂）。
+    with _permanent_safe_globals(torch, safe_types):
+        members = (
+            _iter_archive_members() if group is None
+            else _iter_directory_members(group["directory"], lead, year)
+        )
+        for i, j, member_bytes, label in members:
+            if not (0 <= i < GRID_ROWS and 0 <= j < GRID_COLS):
+                raise RuntimeError(f"模型坐标越界: {label}")
+            if (i, j) in seen:
+                raise RuntimeError(f"模型坐标重复: ({i}, {j})")
+
+            checkpoint = torch.load(
+                io.BytesIO(member_bytes),
+                map_location="cpu",
+                weights_only=True,
+            )
+            if not isinstance(checkpoint, dict) or "state_dict" not in checkpoint:
+                raise RuntimeError(f"checkpoint 结构不正确: {label}")
+
+            model = _build_model(torch, checkpoint)
+            model.load_state_dict(checkpoint["state_dict"], strict=True)
+            model.eval()
+            with torch.inference_mode():
+                normalized_pred = model(input_tensor).reshape(-1).numpy()
+
+            # 与旧 prediction.py 一致：NaN/负的归一化输出先置 0，再反归一化。
+            normalized_pred = np.nan_to_num(
+                normalized_pred, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            normalized_pred[normalized_pred < 0] = 0
+            precip_min = float(checkpoint["precip_min"])
+            precip_max = float(checkpoint["precip_max"])
+            prediction[i, j, :] = (
+                normalized_pred * (precip_max - precip_min) + precip_min
+            ).astype(np.float32, copy=False)
+
+            seen.add((i, j))
+            processed += 1
+            if progress_callback and (
+                processed == 1 or processed % 25 == 0 or processed == EXPECTED_MODELS
+            ):
+                lo, hi = span
+                progress = lo + int(processed / EXPECTED_MODELS * (hi - lo))
+                progress_callback(
+                    progress,
+                    f"正在推理格点 {processed}/{EXPECTED_MODELS}",
+                )
+
+            del model, checkpoint, normalized_pred
+
+    if processed != EXPECTED_MODELS:
+        missing = EXPECTED_MODELS - processed
+        raise RuntimeError(
+            f"模型数量不完整：读取 {processed}/{EXPECTED_MODELS}，缺少 {missing} 个格点"
+        )
+    if not np.all(np.isfinite(prediction)):
+        raise RuntimeError("预测结果包含未填充格点或非有限值")
+    return prediction
+
+
+def _pearson_path(job_dir: Path) -> Path:
+    return job_dir / "pearson_r.npy"
+
+
+def _verify_against_truth(
+    prediction: np.ndarray, job_dir: Path, job_id: str, context: dict
+) -> dict:
+    """对实况场算逐格点 r 图并落盘。**尽力而为：检验失败不让整个预测任务失败。**
+
+    返回的 dict 直接进 `result.verification`。成功时含摘要与下载路径；
+    无实况或失败时含 `available: False` + `reason` —— 前端据此显式说明，
+    而不是悄悄少一块。预测本身才是主产物，检验是附加信息。
+
+    ⚠ **调用方契约（C-2/B-3）**：成功分支里的 `truthPath` 是**服务器绝对路径**，
+    而 `result.verification` 会经 `_public_job()` 原样发给前端。调用方**必须**
+    把它 `pop` 出来、改存任务顶层的 `truthFile`（该键不在公开字段白名单里），
+    否则就是把自己的 Dataset 目录结构交给浏览器（B-3）。两个调用点各做一次：
+    `_run_job()` 与 `chain._run_stage3()`。
+    """
+    lead = context.get("lead")
+    year = context.get("year")
+    try:
+        truth = verification.find_truth(lead, year)
+    except ValueError as exc:  # 多份实况内容不一致，有歧义
+        return {"available": False, "reason": str(exc)}
+    if truth is None:
+        return {
+            "available": False,
+            "reason": (
+                f"没有 {lead}/{year} 的实况场（Dataset/{lead}/{year}/ 下无 "
+                "*_real2.npy），本次只输出预测场，未做技巧检验。"
+            ),
+        }
+
+    try:
+        real = np.asarray(np.load(truth, allow_pickle=False), dtype=np.float64)
+        r_map = verification.pearson_map(prediction, real)
+        summary = verification.summarize(r_map, 0.95)  # 默认 95%，前端可改
+    except (ValueError, OSError, EOFError) as exc:
+        # EOFError 单独列出来：**真 0 字节**的实况件抛的是它（截断件抛 ValueError，
+        # 早就在这张网里）。不接它，一个 0 字节文件就能让整个任务 failed —— 违背
+        # 本函数 docstring 的"尽力而为：检验失败不让整个预测任务失败"。
+        # `_safe_exc` 去掉 `.filename` 里的绝对路径（reason 会进响应）。
+        return {"available": False, "reason": f"实况场对比失败: {_safe_exc(exc)}"}
+
+    np.save(_pearson_path(job_dir), r_map.astype(np.float32), allow_pickle=False)
+    summary.update({
+        "available": True,
+        # 绝对路径：**调用方必须 pop 掉转存顶层 truthFile**，见本函数 docstring。
+        "truthPath": str(truth),
+        "truthName": truth.name,
+        "downloadUrl": f"/api/predict/jobs/{job_id}/download/pearson",
+    })
+    return summary
+
+
+def _run_job(
+    job_id: str, prepare: Callable, result_path: Path, context: dict
+) -> None:
+    """后台执行：`prepare` 负责（解压 +）投影 + 归一化，随后做全网格推理。
+
+    `context` 携带 `lead` / `year`，推理完成后用它去定位实况场做技巧检验。
+    """
+    started = time.time()
+    _update_job(
+        job_id,
+        status="running",
+        stage="正在校验输入",
+        progress=1,
+        startedAt=started,
+    )
+    try:
+        def report(progress: int, stage: str) -> None:
+            _update_job(job_id, progress=progress, stage=stage)
+
+        cio, normalization, projection = prepare(report)
+        projection = projection or {}
+        warnings = [
+            w for w in (normalization.get("warning"), projection.get("warning")) if w
+        ]
+        _update_job(
+            job_id,
+            normalization=normalization,
+            projection=projection,
+            warning=" ".join(warnings) if warnings else None,
+            inputShape=[normalization["inputLength"]],
+        )
+
+        # 进度条：投影/归一化占 1–30%，推理占 30–97%，落盘到 100%
+        prediction = _run_archive_inference(cio, report, span=(30, 97))
+        report(97, "正在保存 prediction.npy")
+        np.save(result_path, prediction, allow_pickle=False)
+
+        report(98, "正在对比实况场计算相关系数")
+        verification_meta = _verify_against_truth(
+            prediction, result_path.parent, job_id, context
+        )
+        # C-2/B-3：实况文件的绝对路径**只留在进程内**（下面的 `truthFile`）。
+        # `verification_meta` 会经 `result` 进 `_public_job()` 的响应，所以这里
+        # 必须把这一个键摘掉 —— 与 `resultPath` 同一条惯例：内部路径不进响应。
+        truth_file = verification_meta.pop("truthPath", None)
+
+        finished = time.time()
+        result = {
+            "shape": list(prediction.shape),
+            "dtype": str(prediction.dtype),
+            "min": float(np.min(prediction)),
+            "max": float(np.max(prediction)),
+            "mean": float(np.mean(prediction)),
+            "downloadUrl": f"/api/predict/jobs/{job_id}/download",
+            "verification": verification_meta,
+        }
+        _update_job(
+            job_id,
+            status="completed",
+            stage="预测完成",
+            progress=100,
+            finishedAt=finished,
+            durationSeconds=round(finished - started, 2),
+            result=result,
+            truthFile=truth_file,
+        )
+    except Exception as exc:  # 后台线程必须把错误保存给前端
+        finished = time.time()
+        # 总闸：任务执行期抛出的**任意**异常的文本都会进 `error`（前端上屏）。
+        # `_safe_exc` 在这里收口，免得逐点给每个可能抛 `OSError` 的调用包 try。
+        # 覆盖范围只限执行路径；受理路径未纳入（见 `_safe_exc` docstring）。
+        _update_job(
+            job_id,
+            status="failed",
+            stage="预测失败",
+            finishedAt=finished,
+            durationSeconds=round(finished - started, 2),
+            error=_safe_exc(exc),
+        )
+
+
+@router.post("/jobs", status_code=202)
+async def create_prediction_job(
+    file: UploadFile = File(...),
+    year: int = Query(2000),
+    lead: str = Query("pre1"),
+    which: str = Query(""),
+):
+    """上传 CIO `.npy` 或原始气象场 `.zip`，创建后台预测任务。
+
+    `.npy`：训练同口径的一维 projected CIO 序列。
+    `.zip`：5–9 月逐日原始场，走 `cioproj` 现场投影。`which` 为空时按文件名判类，
+            判不出即报错（绝不默认按 U850 算）。
+    """
+    if year != 2000 or lead != "pre1":
+        raise HTTPException(400, "当前模型验证仅支持 year=2000、lead=pre1")
+    lead_index = int(LEAD_RE.match(lead).group(1))
+
+    name = file.filename or ""
+    suffix = PurePosixPath(name.replace("\\", "/")).suffix.lower()
+    if suffix not in (".npy", ".zip"):
+        raise HTTPException(400, "只接受 .npy（CIO 序列）或 .zip（原始气象场）")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "上传文件为空")
+
+    job_id = uuid.uuid4().hex
+    job_dir = JOB_ROOT / job_id
+    job_dir.mkdir(parents=True, exist_ok=False)
+    result_path = job_dir / "prediction.npy"
+
+    normalization = None
+    try:
+        if suffix == ".npy":
+            normalization, prepare = _npy_job_input(content, job_dir)
+            projection = {"inputKind": "cio-npy"}
+        else:
+            if not zipfile.is_zipfile(io.BytesIO(content)):
+                raise ValueError("上传的 .zip 无法解析（不是有效的 zip 文件）")
+            projection, prepare = _zip_job_input(
+                content, job_dir, lead_index, which, name, year
+            )
+    except (ValueError, NotImplementedError) as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(400, str(exc)) from exc
+
+    job = {
+        "jobId": job_id,
+        "status": "queued",
+        "stage": "等待后台推理",
+        "progress": 0,
+        "filename": name,
+        "inputKind": projection["inputKind"],
+        "normalization": normalization,
+        "projection": projection,
+        "createdAt": time.time(),
+        "resultPath": str(result_path),
+    }
+    with _jobs_lock:
+        _jobs[job_id] = job
+    _executor.submit(
+        _run_job, job_id, prepare, result_path, {"lead": lead, "year": year}
+    )
+    return _public_job(job)
+
+
+@router.get("/jobs/{job_id}")
+def prediction_job_status(job_id: str):
+    return _public_job(_get_job(job_id))
+
+
+@router.get("/jobs/{job_id}/preview")
+def prediction_preview(
+    job_id: str,
+    time_index: int = Query(0, ge=0, lt=N_STEPS),
+):
+    job = _get_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(409, "预测尚未完成")
+    result_path = Path(job["resultPath"])
+    if not result_path.is_file():
+        raise HTTPException(404, "预测结果文件不存在")
+    prediction = np.load(result_path, mmap_mode="r", allow_pickle=False)
+    frame = np.asarray(prediction[:, :, time_index])
+    return {
+        "timeIndex": time_index,
+        "rows": GRID_ROWS,
+        "cols": GRID_COLS,
+        "min": float(np.min(frame)),
+        "max": float(np.max(frame)),
+        "data": frame.tolist(),
+    }
+
+
+@router.get("/jobs/{job_id}/grid")
+def prediction_grid_series(
+    job_id: str,
+    i: int = Query(40, ge=0, lt=GRID_ROWS),
+    j: int = Query(50, ge=0, lt=GRID_COLS),
+):
+    job = _get_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(409, "预测尚未完成")
+    result_path = Path(job["resultPath"])
+    if not result_path.is_file():
+        raise HTTPException(404, "预测结果文件不存在")
+    prediction = np.load(result_path, mmap_mode="r", allow_pickle=False)
+    response = {
+        "i": i,
+        "j": j,
+        "pred": np.asarray(prediction[i, j, :]).tolist(),
+        "truth": None,
+        "truthName": None,
+        "r": None,
+    }
+
+    meta = (job.get("result") or {}).get("verification") or {}
+    truth_path = job.get("truthFile")
+    if meta.get("available") and truth_path and Path(truth_path).is_file():
+        truth = np.load(truth_path, mmap_mode="r", allow_pickle=False)
+        if truth.shape != prediction.shape:
+            raise HTTPException(
+                409,
+                f"实况场形状 {truth.shape} 与预测场 {prediction.shape} 不一致",
+            )
+        truth_series = np.asarray(truth[i, j, :], dtype=np.float64)
+        response["truth"] = [
+            None if not np.isfinite(value) else float(value)
+            for value in truth_series
+        ]
+        response["truthName"] = meta.get("truthName")
+
+        r_path = _pearson_path(result_path.parent)
+        if r_path.is_file():
+            r_value = float(np.load(r_path, mmap_mode="r", allow_pickle=False)[i, j])
+            response["r"] = r_value if np.isfinite(r_value) else None
+
+    return response
+
+
+@router.get("/jobs/{job_id}/pearson")
+def prediction_pearson(
+    job_id: str,
+    confidence: float = Query(0.95),
+):
+    """逐格点 Pearson r 图 + 该置信水平下的技巧摘要。
+
+    `confidence` 直接对应前端「CIO参数设置 → 显著性置信水平」，只影响**阈值**
+    （哪些格点算显著），不改变 r 本身 —— r 与置信水平无关，重算阈值是纯后处理。
+    """
+    job = _get_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(409, "预测尚未完成")
+    meta = (job.get("result") or {}).get("verification") or {}
+    if not meta.get("available"):
+        raise HTTPException(
+            409, meta.get("reason") or "该任务没有可用的实况场对比结果"
+        )
+
+    try:
+        level = verification.normalize_confidence(confidence)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    r_path = _pearson_path(Path(job["resultPath"]).parent)
+    if not r_path.is_file():
+        raise HTTPException(404, "相关系数图文件不存在")
+    r_map = np.load(r_path, allow_pickle=False)
+
+    summary = verification.summarize(r_map, level)
+    summary.update({
+        "truthName": meta.get("truthName"),
+        "downloadUrl": meta.get("downloadUrl"),
+    })
+    rows = r_map.shape[0]
+    cols = r_map.shape[1]
+    return {
+        "rows": rows,
+        "cols": cols,
+        "min": float(np.nanmin(r_map)),
+        "max": float(np.nanmax(r_map)),
+        **summary,
+        # NaN 不是合法 JSON（Starlette 用 allow_nan=False，直接传会 500），
+        # 且前端要区分"无定义"与"r=0"，所以转成 null
+        "data": [
+            [None if not np.isfinite(v) else float(v) for v in row]
+            for row in r_map
+        ],
+    }
+
+
+@router.get("/jobs/{job_id}/truth/preview")
+def prediction_truth_preview(
+    job_id: str,
+    time_index: int = Query(0, ge=0, lt=N_STEPS),
+):
+    """实况场的某一时间步，用来和预测场并排看。"""
+    job = _get_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(409, "预测尚未完成")
+    meta = (job.get("result") or {}).get("verification") or {}
+    # C-2/B-3：实况路径读**任务顶层** `truthFile`（进程内字段，不在响应里）。
+    # `result.verification.truthPath` 已不再存在 —— 别再退回那里读。
+    truth_path = job.get("truthFile")
+    if not truth_path or not Path(truth_path).is_file():
+        raise HTTPException(409, meta.get("reason") or "该任务没有可用的实况场")
+
+    truth = np.load(truth_path, mmap_mode="r", allow_pickle=False)
+    frame = np.asarray(truth[:, :, time_index], dtype=np.float64)
+    return {
+        "timeIndex": time_index,
+        "rows": int(frame.shape[0]),
+        "cols": int(frame.shape[1]),
+        "min": float(np.min(frame)),
+        "max": float(np.max(frame)),
+        "data": frame.tolist(),
+    }
+
+
+@router.get("/jobs/{job_id}/download/pearson")
+def download_pearson(job_id: str):
+    """下载逐格点 r 图（float32, (81, 101)）；无定义格点为 NaN。"""
+    job = _get_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(409, "预测尚未完成")
+    r_path = _pearson_path(Path(job["resultPath"]).parent)
+    if not r_path.is_file():
+        raise HTTPException(404, "相关系数图文件不存在")
+    return FileResponse(
+        r_path,
+        media_type="application/octet-stream",
+        filename="pearson_r_pre1_2000.npy",
+    )
+
+
+@router.get("/jobs/{job_id}/download")
+def download_prediction(job_id: str):
+    job = _get_job(job_id)
+    if job.get("status") != "completed":
+        raise HTTPException(409, "预测尚未完成")
+    result_path = Path(job["resultPath"])
+    if not result_path.is_file():
+        raise HTTPException(404, "预测结果文件不存在")
+    return FileResponse(
+        result_path,
+        media_type="application/octet-stream",
+        filename="prediction_pre1_2000.npy",
+    )

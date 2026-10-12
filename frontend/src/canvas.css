@@ -1,0 +1,21 @@
+/* 自适应应用外壳：宽屏双列、窄屏单列，不再整页缩放或固定 3:2。 */
+
+.app-viewport {
+  position: fixed;
+  inset: 0;
+  /* clip 不保留窄屏整页滚动的位置，切回宽屏时侧栏从顶部显示。 */
+  overflow: clip;
+  background: #f4f7fa;
+}
+
+.app-canvas {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+
+/* 小窗口采用整页滚动，避免侧栏与结果区互相截断。 */
+@media (max-width: 760px) {
+  .app-viewport { overflow-y: auto; }
+  .app-canvas { height: auto; min-height: 100%; }
+}
