@@ -34,8 +34,7 @@ export default function ParamPanel({
       <div className="panel-section">
         <h3 className="section-title">CIO参数设置</h3>
         <p className="param-hint" style={{ marginBottom: 10 }}>
-          前三项由已固化的投影基与权重锁死，<strong>改不了</strong>，这里如实列出实际值；
-          只有显著性阈值是纯后处理，可调。
+          以下参数由已固化的投影基与权重锁定，这里列出实际值。
         </p>
         <LockedParam
           label="滤波频段"
@@ -56,20 +55,6 @@ export default function ParamPanel({
             ? '由当前所选权重组的格点坐标决定；不同权重组可能使用不同的有效格点范围。'
             : '由权重包 pre1_2000.tar.gz 里 8181 个格点的坐标决定。'}
         />
-        <div className="param-group">
-          <label>显著性置信水平</label>
-          <StyledSelect ariaLabel="显著性置信水平" value={params.cioSignificance}
-            onChange={e => onChange('cioSignificance', e.target.value)}>
-            <option value="0.90">90%</option>
-            <option value="0.95">95%</option>
-            <option value="0.99">99%</option>
-          </StyledSelect>
-          <span className="param-hint">
-            只作用于「预测 vs 实况」相关系数图的显著性阈值（n=112 双尾 t 检验，
-            90/95/99% 对应 |r| ≥ 0.156/0.186/0.243），不改变 r 本身。
-            在「在线推理」结果页生效。
-          </span>
-        </div>
         {uploadModelSelectors}
       </div>
     );
@@ -108,20 +93,6 @@ export default function ParamPanel({
         </StyledSelect>
         <span className="param-hint">数据集仅覆盖东亚 20-40°N, 100-125°E</span>
       </div>
-      {liveModelMode && (
-        <div className="param-group">
-          <label>显著性置信水平</label>
-          <StyledSelect ariaLabel="显著性置信水平" value={params.cioSignificance}
-            onChange={e => onChange('cioSignificance', e.target.value)}>
-            <option value="0.90">90%</option>
-            <option value="0.95">95%</option>
-            <option value="0.99">99%</option>
-          </StyledSelect>
-          <span className="param-hint">
-            结果页「逐格点相关系数」的显著性阈值（n=112 双尾 t 检验）
-          </span>
-        </div>
-      )}
     </div>
   );
 }

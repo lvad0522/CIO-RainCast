@@ -12,7 +12,7 @@ import NormalizationPanel from './components/NormalizationPanel';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_DATA_API_BASE || import.meta.env.VITE_API_BASE || '';
-const defaults = { predYear: 2000, leadTime: 'pre20', predRegion: 'eastasia', cioSignificance: '0.95' };
+const defaults = { predYear: 2000, leadTime: 'pre20', predRegion: 'eastasia' };
 
 async function read(path, signal) {
   const response = await fetch(`${API_BASE}${path}`, { signal });
@@ -128,7 +128,7 @@ export default function App() {
       {results && <section id="rainfall" className="chain-stage-group">
         <h2 className="chain-stage-heading">03 / East Asian rainfall · {results.year} · {String(results.lead).replace('pre', '')}-day lead</h2>
         <div className="result-row overview-row">
-          <div className="result-col"><SkillMap key={`${results.year}-${results.lead}`} data={results.skillMap} sampleCount={results.timeSeries?.real?.length} confidence={params.cioSignificance} region="eastasia" onGridClick={handleGridClick} /></div>
+          <div className="result-col"><SkillMap key={`${results.year}-${results.lead}`} data={results.skillMap} region="eastasia" onGridClick={handleGridClick} /></div>
           <div className="result-col">
             <ModelCompareChart data={results.s2s} />
             <CioModelComparison year={results.year} lead={results.lead} apiBase={API_BASE} />

@@ -15,12 +15,6 @@ export default function ParamPanel({ params, onChange, disabled = false }) {
         {Array.from({ length: 20 }, (_, i) => i+1).map(lead => <option key={lead} value={`pre${lead}`}>{lead}-day lead</option>)}
       </StyledSelect>
     </div>
-    <div className="param-group">
-      <label>Confidence level</label>
-      <StyledSelect ariaLabel="Confidence level" value={params.cioSignificance} onChange={event => onChange('cioSignificance', event.target.value)}>
-        <option value="0.90">90%</option><option value="0.95">95%</option><option value="0.99">99%</option>
-      </StyledSelect>
-    </div>
   </fieldset>;
 }
 

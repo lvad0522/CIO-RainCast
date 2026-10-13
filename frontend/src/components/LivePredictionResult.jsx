@@ -195,7 +195,7 @@ function GeoHeatmapFrame({ children, data, rows, cols, geoData, selectedPoint = 
   );
 }
 
-export default function LivePredictionResult({ job, confidence = '0.95', apiRoot, showSkill = true, showRunSummary = true, initialColorScale = 'shared', showColorScaleControl = false, children }) {
+export default function LivePredictionResult({ job, apiRoot, showSkill = true, showRunSummary = true, initialColorScale = 'shared', showColorScaleControl = false, children }) {
   const [timeIndex, setTimeIndex] = useState(0);
   const [loadedFrame, setFrame] = useState(null);
   const [preferredView, setView] = useState('prediction');
@@ -272,11 +272,11 @@ export default function LivePredictionResult({ job, confidence = '0.95', apiRoot
     return () => controller.abort();
   }, [job.jobId, timeIndex, view, pearsonAvailable, root]);
 
-  // r 图与置信水平无关，只有阈值随 confidence 变 —— 每次改档位向后端要一次摘要
+  // Fetch the correlation field and summary for the current prediction job.
   useEffect(() => {
     if (!pearsonAvailable || !showSkill) return undefined;
     const controller = new AbortController();
-    fetch(`${root}/pearson?confidence=${confidence}`, {
+    fetch(`${root}/pearson`, {
       signal: controller.signal,
     })
       .then(async (res) => {
@@ -289,7 +289,7 @@ export default function LivePredictionResult({ job, confidence = '0.95', apiRoot
         if (err.name !== 'AbortError') setError(err.message);
       });
     return () => controller.abort();
-  }, [job.jobId, confidence, pearsonAvailable, root, showSkill]);
+  }, [job.jobId, pearsonAvailable, root, showSkill]);
 
   useEffect(() => {
     if (!pearsonAvailable) return undefined;
@@ -334,7 +334,7 @@ export default function LivePredictionResult({ job, confidence = '0.95', apiRoot
     });
   }, [frame, view, colorScaleMax]);
 
-  // r 图直接按相关系数上色；显著性阈值只保留在摘要统计中，不改变热力图颜色。
+  // Correlation colors encode the r values directly.
   useEffect(() => {
     if (!pearson || !rCanvasRef.current) return;
     const canvas = rCanvasRef.current;
@@ -671,18 +671,13 @@ export default function LivePredictionResult({ job, confidence = '0.95', apiRoot
                 const lon = 100 + (j * 25) / Math.max(pearson.cols - 1, 1);
                 const lat = 20 + (i * 20) / Math.max(pearson.rows - 1, 1);
                 const finite = Number.isFinite(value);
-                const significant = finite && Math.abs(value) >= pearson.criticalR;
                 return (
                   <div className="pearson-point-readout" role="status">
                     <span>Selected grid point</span>
                     <strong>{lon.toFixed(2)}°E，{lat.toFixed(2)}°N</strong>
                     <span>Pearson correlation</span>
                     <strong>{finite ? `r = ${value}` : 'r Undefined'}</strong>
-                    <span className={`pearson-point-status ${significant ? 'is-significant' : ''}`}>
-                      {finite
-                        ? (significant ? 'Significant at selected confidence' : 'Below selected significance threshold')
-                        : 'Constant series'}
-                    </span>
+                    {!finite && <span className="pearson-point-status">Undefined correlation</span>}
                   </div>
                 );
               })()}
@@ -704,10 +699,6 @@ export default function LivePredictionResult({ job, confidence = '0.95', apiRoot
                   <span>Median</span><strong>{pearson.medianR}</strong>
                   <span>Range</span><strong>{pearson.minR} ～ {pearson.maxR}</strong>
                   <span>Positive correlation</span><strong>{(pearson.positiveFraction * 100).toFixed(1)}%</strong>
-                  <span>Significant positive correlation</span>
-                  <strong>{(pearson.significantPositiveFraction * 100).toFixed(1)}%</strong>
-                  <span>Significant negative correlation</span>
-                  <strong>{(pearson.significantNegativeFraction * 100).toFixed(1)}%</strong>
                   <span>Undefined grid points</span>
                   <strong>{pearson.undefinedPoints} / {pearson.totalPoints}</strong>
                   <span>Observation</span><strong>{pearson.truthName}</strong>

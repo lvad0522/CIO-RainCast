@@ -198,14 +198,11 @@ function MiniRow({ row, onClick }) {
   );
 }
 
-export default function SkillMap({ data, region, onGridClick, sampleCount, confidence = '0.95' }) {
+export default function SkillMap({ data, region, onGridClick }) {
   const { data: gridData, rows, cols } = data;
   const [geoData, setGeoData] = useState(null);
   const [selected, setSelected] = useState(null);
   const point = selected?.gridData === gridData ? selected : null;
-  // 历史数据契约为每年 112 点；阈值由后端 verification.critical_r(112, level) 对拍。
-  const thresholds = { '0.9': 0.1562, '0.95': 0.1857, '0.99': 0.2425 };
-  const criticalR = sampleCount === 112 ? thresholds[String(Number(confidence))] : undefined;
   const summary = useMemo(() => {
     const values = gridData.flat().filter(Number.isFinite).sort((a, b) => a - b);
     if (!values.length) return null;
@@ -215,11 +212,9 @@ export default function SkillMap({ data, region, onGridClick, sampleCount, confi
       median: (values[Math.floor((n - 1) / 2)] + values[Math.floor(n / 2)]) / 2,
       min: values[0], max: values[n - 1],
       positive: values.filter(value => value > 0).length / n,
-      significantPositive: criticalR == null ? null : values.filter(value => value >= criticalR).length / n,
-      significantNegative: criticalR == null ? null : values.filter(value => value <= -criticalR).length / n,
       undefined: rows * cols - n,
     };
-  }, [gridData, rows, cols, criticalR]);
+  }, [gridData, rows, cols]);
   useEffect(() => {
     let alive = true;
     fetch(GEO_URL)
@@ -345,15 +340,12 @@ export default function SkillMap({ data, region, onGridClick, sampleCount, confi
       {point && (() => {
         const value = gridData[point.i][point.j];
         const finite = Number.isFinite(value);
-        const significant = finite && criticalR != null && Math.abs(value) >= criticalR;
         return (
           <div className="pearson-point-readout" role="status">
             <span>Selected grid point</span>
             <strong>{(100 + point.j * 25 / (cols - 1)).toFixed(2)}°E，{(20 + point.i * 20 / (rows - 1)).toFixed(2)}°N</strong>
             <span>Pearson correlation</span><strong>{finite ? `r = ${value}` : 'r Undefined'}</strong>
-            <span className={`pearson-point-status ${significant ? 'is-significant' : ''}`}>
-              {!finite ? 'Undefined correlation' : criticalR == null ? 'Significance threshold unavailable' : significant ? 'Significant at selected confidence' : 'Below selected significance threshold'}
-            </span>
+            {!finite && <span className="pearson-point-status">Undefined correlation</span>}
           </div>
         );
       })()}
@@ -365,8 +357,6 @@ export default function SkillMap({ data, region, onGridClick, sampleCount, confi
           <span>Median</span><strong>{summary.median}</strong>
           <span>Range</span><strong>{summary.min} ～ {summary.max}</strong>
           <span>Positive correlation</span><strong>{(summary.positive * 100).toFixed(1)}%</strong>
-          <span>Significant positive correlation</span><strong>{summary.significantPositive == null ? '—' : `${(summary.significantPositive * 100).toFixed(1)}%`}</strong>
-          <span>Significant negative correlation</span><strong>{summary.significantNegative == null ? '—' : `${(summary.significantNegative * 100).toFixed(1)}%`}</strong>
           <span>Undefined grid points</span><strong>{summary.undefined} / {rows * cols}</strong>
         </div>
       </section>}

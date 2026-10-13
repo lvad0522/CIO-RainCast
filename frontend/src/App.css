@@ -486,7 +486,6 @@
   justify-self: start;
   color: #8b6b2d;
 }
-.pearson-point-status.is-significant { color: #25735d; }
 .prediction-legend {
   display: flex;
   align-items: center;

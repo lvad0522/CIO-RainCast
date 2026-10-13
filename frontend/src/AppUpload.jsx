@@ -44,7 +44,6 @@ const defaultParams = {
   cioFilterLow: 0.02,
   cioFilterHigh: 0.1,
   cioRegion: 'tropical',
-  cioSignificance: '0.95',
   predYear: 2000,
   leadTime: 'pre20',
   predRegion: 'eastasia',  // 数据集仅支持东亚（20-40°N, 100-125°E）
@@ -238,7 +237,6 @@ export default function App() {
         filter_low: params.cioFilterLow,
         filter_high: params.cioFilterHigh,
         cio_region: params.cioRegion,
-        significance: params.cioSignificance,
       }).toString();
       const res = await fetch(`${DATA_API_BASE}/api/run?${query}`);
       if (!res.ok) throw new Error(`API 返回 ${res.status}`);
@@ -276,7 +274,7 @@ export default function App() {
   // `.npy` 入口跳过①；只跑投影的完成态下③ 是"本次未运行"而不是"待运行"
   const stage1Skipped = Boolean(chainJob?.projection?.stage1Skipped);
   const projectionOnlyDone = stageStatus === 'completed' && stageIndex === STAGE_NORMALIZATION;
-  // 两种运行范围共用年份、提前期、区域和显著性参数面板。
+  // 两种运行范围共用年份、提前期和区域参数面板。
   const paramModule = 'lstm';
   const stageLabel = (n) => {
     if (n === STAGE_PROJECTION && stage1Skipped) return '投影CIO（已跳过）';
@@ -397,7 +395,7 @@ export default function App() {
         {uploadMode && stageIndex >= STAGE_PROJECTION && (
           <section className="chain-stage-group">
             <h2 className="chain-stage-heading">阶段① 投影 CIO</h2>
-            <CioProjectionResult job={chainJob} confidence={params.cioSignificance} />
+            <CioProjectionResult job={chainJob} />
           </section>
         )}
 
@@ -412,7 +410,7 @@ export default function App() {
         {uploadMode && runScope === 'full' && stageIndex >= STAGE_PREDICTION && (
           <section className="chain-stage-group">
             <h2 className="chain-stage-heading">阶段③ LSTM 降水预测</h2>
-            <LivePredictionResult job={chainJob} confidence={params.cioSignificance} />
+            <LivePredictionResult job={chainJob} />
           </section>
         )}
 
@@ -422,8 +420,6 @@ export default function App() {
               <div className="result-col">
                 <SkillMap
                   data={results.skillMap}
-                  sampleCount={results.timeSeries?.real?.length}
-                  confidence={params.cioSignificance}
                   region={params.predRegion}
                   onGridClick={handleGridClick}
                 />

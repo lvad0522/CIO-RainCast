@@ -54,7 +54,6 @@ function useCioDiagnostics(jobId, apiBase) {
       mode: '/api/cio/mode/u850',
       series: `/api/chain/jobs/${jobId}/series`,
       completeness: `/api/chain/jobs/${jobId}/completeness`,
-      // spectrum: `/api/chain/jobs/${jobId}/spectrum?confidence=${confidence}`,
     };
     Promise.all(Object.entries(endpoints).map(async ([key, path]) => {
       const response = await fetch(`${apiBase}${path}`);
@@ -614,9 +613,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
 //     return spectrum.periodDays.map((period, index) => ({
 //       period,
 //       projectedPower: spectrum.projectedPower[index],
-//       projectedConfidence: spectrum.projectedConfidence[index],
 //       actualPower: spectrum.actualPower?.[index],
-//       actualConfidence: spectrum.actualConfidence?.[index],
 //     }));
 //   }, [data.spectrum]);
   const calendarKnown = Boolean(data.series?.calendarKnown);
@@ -745,11 +742,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
                   {data.spectrum.actualPower && (
                     <Line type="linear" dataKey="actualPower" name="实际 CIO 功率" stroke="#3156a3" dot={false} strokeWidth={1.6} />
                   )}
-                  {data.spectrum.actualConfidence && (
-                    <Line type="linear" dataKey="actualConfidence" name={`实际 CIO ${(Number(confidence) * 100).toFixed(0)}% 上包络`} stroke="#3156a3" strokeDasharray="5 4" dot={false} strokeWidth={1.1} />
-                  )}
                   <Line type="linear" dataKey="projectedPower" name={`${lineLabel}功率`} stroke="#3b8734" dot={false} strokeWidth={1.6} />
-                  <Line type="linear" dataKey="projectedConfidence" name={`${(Number(confidence) * 100).toFixed(0)}% bootstrap 上包络`} stroke="#3b8734" strokeDasharray="5 4" dot={false} strokeWidth={1.1} />
                   <Brush dataKey="x" height={22} travellerWidth={8} stroke="#47838b" tickFormatter={value => String(value).slice(0, 10)} />
                 </LineChart>
               </ResponsiveContainer>
