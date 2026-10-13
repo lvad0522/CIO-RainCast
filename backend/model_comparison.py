@@ -1,4 +1,4 @@
-"""Paired, fixed-run comparison of the CIO-input LSTM and ASTGRN products.
+"""Paired, fixed-run comparison of the CIO-input LSTM, ASTGRN and STDN products.
 
 Only scalar summaries are cached. Neither process-wide DATA_ROOT / DISPLAY_MODE
 nor the legacy pearson2 products participate in this calculation.
@@ -15,8 +15,12 @@ from real_data import dataset_file_path
 
 router = APIRouter(tags=["model-comparison"])
 _REPO = Path(__file__).resolve().parent.parent
-DATA_ROOTS = {"LSTM": _REPO / "Dataset", "ASTGRN": _REPO / "Dataset-AGCRN"}
-MODELS = ("LSTM", "ASTGRN")
+DATA_ROOTS = {
+    "LSTM": _REPO / "Dataset",
+    "ASTGRN": _REPO / "Dataset-AGCRN",
+    "STDN": _REPO / "Dataset-STDN",
+}
+MODELS = ("LSTM", "ASTGRN", "STDN")
 YEARS = tuple(range(2000, 2020))
 LEADS = tuple(range(1, 21))
 SHAPE = (81, 101, 112)
@@ -28,13 +32,13 @@ REGIONS = {
     "eastasia": (slice(None), slice(None), "100–125°E, 20–40°N"),
 }
 DEFINITION = (
-    "Fixed run 1; both models use CIO inputs. Gridpoint Pearson correlations "
+    "Fixed run 1; all three models use CIO inputs. Gridpoint Pearson correlations "
     "are recomputed on shared finite time samples and averaged over the same "
-    "gridpoints where both correlations are defined. RMSE and MAE pool all "
-    "shared finite gridpoint-time pairs in the selected region. Both use the "
-    "LSTM truth after confirming the two stored truths agree within numerical "
-    "precision (rtol=1e-6, atol=1e-5). Across-year curves average each year's "
-    "paired regional correlation equally. Training setups differ; this is a "
+    "gridpoints where all correlations are defined. RMSE and MAE pool all "
+    "shared finite gridpoint-time pairs in the selected region. All models are "
+    "scored against the LSTM truth after confirming the stored truths agree within "
+    "numerical precision (rtol=1e-6, atol=1e-5). Across-year curves average each "
+    "year's paired regional correlation equally. Training setups differ; this is a "
     "prediction-method comparison, not a strict network ablation or CIO-gain test."
 )
 
@@ -70,22 +74,30 @@ def _point_correlations(prediction, truth, mask):
     return np.clip(result, -1, 1)
 
 
-def summarize_arrays(lstm_prediction, lstm_truth, astgrn_prediction, astgrn_truth, region):
-    arrays = (lstm_prediction, lstm_truth, astgrn_prediction, astgrn_truth)
+def summarize_arrays(lstm_prediction, lstm_truth, astgrn_prediction, astgrn_truth,
+                     stdn_prediction, stdn_truth, region):
+    arrays = (lstm_prediction, lstm_truth, astgrn_prediction, astgrn_truth,
+              stdn_prediction, stdn_truth)
     if any(array.shape != SHAPE for array in arrays):
         raise HTTPException(422, "Prediction/truth arrays must all have shape (81, 101, 112)")
-    if not np.allclose(lstm_truth, astgrn_truth, rtol=1e-6, atol=1e-5, equal_nan=True):
-        raise HTTPException(409, "LSTM and ASTGRN truths differ; the case cannot be compared")
+    for model, other_truth in zip(MODELS[1:], (astgrn_truth, stdn_truth)):
+        if not np.allclose(lstm_truth, other_truth, rtol=1e-6, atol=1e-5, equal_nan=True):
+            raise HTTPException(409, f"LSTM and {model} truths differ; the case cannot be compared")
     row_slice, col_slice, _ = REGIONS[region]
     selected = [np.asarray(array[row_slice, col_slice, :], dtype=np.float64) for array in arrays]
-    lp, truth, ap, at = selected
-    mask = np.isfinite(lp) & np.isfinite(truth) & np.isfinite(ap) & np.isfinite(at)
-    correlations = [_point_correlations(pred, truth, mask) for pred in (lp, ap)]
-    paired_points = np.isfinite(correlations[0]) & np.isfinite(correlations[1])
+    predictions, truths = selected[0::2], selected[1::2]
+    truth = truths[0]
+    mask = np.isfinite(truth)
+    for array in selected:
+        mask &= np.isfinite(array)
+    correlations = [_point_correlations(prediction, truth, mask) for prediction in predictions]
+    paired_points = np.isfinite(correlations[0])
+    for correlation in correlations[1:]:
+        paired_points &= np.isfinite(correlation)
     point_count = int(paired_points.sum())
     pair_count = int(mask.sum())
     rows = []
-    for model, prediction, correlation in zip(MODELS, (lp, ap), correlations):
+    for model, prediction, correlation in zip(MODELS, predictions, correlations):
         errors = prediction[mask] - truth[mask]
         rows.append({
             "model": model,
@@ -141,15 +153,20 @@ def comparison(year, lead, region="focus", scope="year"):
                 available += 1
             else:
                 missing.append({"year": curve_year, "lead": curve_lead, "status": "undefined",
-                                "reason": "No gridpoints have defined correlation for both models"})
-        means = np.mean(pairs, axis=0) if pairs else (None, None)
-        curve.append({"lead": curve_lead, "LSTM": None if means[0] is None else float(means[0]),
-                      "ASTGRN": None if means[1] is None else float(means[1])})
+                                "reason": "No gridpoints have defined correlation for all models"})
+        means = np.mean(pairs, axis=0) if pairs else (None,) * len(MODELS)
+        curve.append({"lead": curve_lead,
+                      **{model: None if value is None else float(value)
+                         for model, value in zip(MODELS, means)}})
         valid_by_lead.append({"lead": curve_lead, "availableYears": len(pairs), "totalYears": len(years)})
     rows = [dict(row) for row in current["rows"]]
+    # delta = ASTGRN − LSTM（主模型对基线）；deltaSTDN = ASTGRN − STDN（主模型对证伪对照）
     delta = {key: rows[1][key] - rows[0][key]
              if rows[0][key] is not None and rows[1][key] is not None else None
              for key in ("meanGridR", "rmse", "mae")}
+    delta_stdn = {key: rows[1][key] - rows[2][key]
+                  if rows[1][key] is not None and rows[2][key] is not None else None
+                  for key in ("meanGridR", "rmse", "mae")}
     return {
         "year": year, "lead": lead, "region": region, "scope": scope,
         "models": list(MODELS), "metric": "mean_gridpoint_r",
@@ -157,7 +174,7 @@ def comparison(year, lead, region="focus", scope="year"):
         "sampleCount": current["sampleCount"], "validGridPoints": current["validGridPoints"],
         "regionGridPoints": current["regionGridPoints"],
         "validSamplePairs": current["validSamplePairs"], "validTimeSteps": current["validTimeSteps"],
-        "rows": rows, "delta": delta, "curve": curve,
+        "rows": rows, "delta": delta, "deltaSTDN": delta_stdn, "curve": curve,
         "coverage": {"years": list(years), "availableCases": available,
                      "totalCases": len(years) * len(LEADS), "byLead": valid_by_lead,
                      "missing": missing},

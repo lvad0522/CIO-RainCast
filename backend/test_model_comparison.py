@@ -19,7 +19,7 @@ def tiny_case(monkeypatch):
 
 def fields():
     truth = np.broadcast_to(np.arange(4, dtype=float), C.SHAPE).copy()
-    return truth + 1, truth, truth + 2, truth.copy()
+    return truth + 1, truth, truth + 2, truth.copy(), truth + 3, truth.copy()
 
 
 def save_case(root, year, lead, prediction, truth, malformed=False, pre7_new=False):
@@ -32,9 +32,9 @@ def save_case(root, year, lead, prediction, truth, malformed=False, pre7_new=Fal
 
 
 def test_explicit_sources_do_not_use_global_root_or_display_cache(monkeypatch, tmp_path):
-    roots = {"LSTM": tmp_path / "lstm", "ASTGRN": tmp_path / "astgrn"}
-    lp, truth, ap, at = fields()
-    for model, prediction in (("LSTM", lp), ("ASTGRN", ap)):
+    roots = {"LSTM": tmp_path / "lstm", "ASTGRN": tmp_path / "astgrn", "STDN": tmp_path / "stdn"}
+    lp, truth, ap, at, sp, st = fields()
+    for model, prediction in (("LSTM", lp), ("ASTGRN", ap), ("STDN", sp)):
         save_case(roots[model], 2001, 1, prediction, truth)
     monkeypatch.setattr(C, "DATA_ROOTS", roots)
     monkeypatch.setattr(D, "DATA_ROOT", str(tmp_path / "not-a-dataset"))
@@ -44,13 +44,14 @@ def test_explicit_sources_do_not_use_global_root_or_display_cache(monkeypatch, t
     summary = C.case_summary(2001, 1, "focus")
     assert summary["rows"][0]["rmse"] == pytest.approx(1)
     assert summary["rows"][1]["rmse"] == pytest.approx(2)
+    assert summary["rows"][2]["rmse"] == pytest.approx(3)
     assert D.DATA_ROOT.endswith("not-a-dataset")
     assert D.DISPLAY_MODE == "foldmax"
     assert D._cache._data == before
 
 
 def test_repaired_pre7_and_second_prediction_take_priority(tmp_path):
-    lp, truth, _, _ = fields()
+    lp, truth, *_ = fields()
     save_case(tmp_path, 2001, 7, lp + 100, truth)
     save_case(tmp_path, 2001, 7, lp, truth, pre7_new=True)
     assert "pre7-new" in D.dataset_file_path(str(tmp_path), 7, 2001, 1, "predict2")
@@ -65,53 +66,60 @@ def test_repaired_pre7_and_second_prediction_take_priority(tmp_path):
 
 
 def test_shared_finite_samples_and_common_defined_gridpoints():
-    lp, truth, ap, at = fields()
+    lp, truth, ap, at, sp, st = fields()
     # Exclude one constant-prediction point from both correlation averages.
     ap[0, 0] = 2
     # Remove the same sample from both models even though only LSTM is missing.
     lp[0, 1, 0] = np.nan
     ap[0, 1, 0] = 999
-    summary = C.summarize_arrays(lp, truth, ap, at, "focus")
+    summary = C.summarize_arrays(lp, truth, ap, at, sp, st, "focus")
     assert summary["validGridPoints"] == 3
     assert summary["validSamplePairs"] == 15
     assert summary["sampleCount"] == 4
     assert summary["rows"][0]["meanGridR"] == pytest.approx(1)
     assert summary["rows"][1]["meanGridR"] == pytest.approx(1)
-    shared = np.isfinite(lp) & np.isfinite(ap)
-    for row, pred in zip(summary["rows"], (lp, ap)):
+    assert summary["rows"][2]["meanGridR"] == pytest.approx(1)
+    shared = np.isfinite(lp) & np.isfinite(ap) & np.isfinite(sp)
+    for row, pred in zip(summary["rows"], (lp, ap, sp)):
         error = pred[shared] - truth[shared]
         assert row["rmse"] == pytest.approx(np.sqrt(np.mean(error ** 2)))
         assert row["mae"] == pytest.approx(np.mean(np.abs(error)))
 
 
 def test_undefined_correlations_and_empty_values_are_null():
-    lp, truth, ap, at = fields()
+    lp, truth, ap, at, sp, st = fields()
     lp[:] = 2
-    summary = C.summarize_arrays(lp, truth, ap, at, "focus")
+    summary = C.summarize_arrays(lp, truth, ap, at, sp, st, "focus")
     assert summary["validGridPoints"] == 0
     assert all(row["meanGridR"] is None for row in summary["rows"])
     lp[:] = np.nan
-    summary = C.summarize_arrays(lp, truth, ap, at, "focus")
+    summary = C.summarize_arrays(lp, truth, ap, at, sp, st, "focus")
     assert summary["validSamplePairs"] == 0
     assert all(row["rmse"] is None and row["mae"] is None for row in summary["rows"])
 
 
 def test_truth_tolerance_and_mismatch():
-    lp, truth, ap, at = fields()
+    lp, truth, ap, at, sp, st = fields()
     at += 1e-6
-    assert C.summarize_arrays(lp, truth, ap, at, "focus")["rows"][1]["rmse"] == pytest.approx(2)
+    assert C.summarize_arrays(lp, truth, ap, at, sp, st, "focus")["rows"][1]["rmse"] == pytest.approx(2)
     at[0, 0, 0] += .1
     with pytest.raises(HTTPException) as error:
-        C.summarize_arrays(lp, truth, ap, at, "focus")
+        C.summarize_arrays(lp, truth, ap, at, sp, st, "focus")
+    assert error.value.status_code == 409
+    # STDN 真值同样受一致性门约束
+    st[0, 0, 0] += .1
+    with pytest.raises(HTTPException) as error:
+        C.summarize_arrays(lp, truth, ap, truth, sp, st, "focus")
     assert error.value.status_code == 409
     with pytest.raises(HTTPException) as error:
-        C.summarize_arrays(lp[:, :, :2], truth, ap, truth, "focus")
+        C.summarize_arrays(lp[:, :, :2], truth, ap, truth, sp, st, "focus")
     assert error.value.status_code == 422
 
 
-def stub_summary(a, b):
+def stub_summary(a, b, c):
     return {"rows": [{"model": "LSTM", "meanGridR": a, "rmse": 2, "mae": 1, "fold": 1},
-                     {"model": "ASTGRN", "meanGridR": b, "rmse": 1, "mae": .5, "fold": 1}],
+                     {"model": "ASTGRN", "meanGridR": b, "rmse": 1, "mae": .5, "fold": 1},
+                     {"model": "STDN", "meanGridR": c, "rmse": 4, "mae": 2, "fold": 1}],
             "sampleCount": 4, "validGridPoints": 4, "regionGridPoints": 4,
             "validSamplePairs": 16, "validTimeSteps": 4}
 
@@ -119,16 +127,22 @@ def stub_summary(a, b):
 def test_equal_year_weight_curve_and_selected_case_rows(monkeypatch):
     monkeypatch.setattr(C, "YEARS", (2000, 2001))
     def case(year, lead, region):
-        result = stub_summary(.2 if year == 2000 else .6, .4 if year == 2000 else .8)
+        result = stub_summary(.2 if year == 2000 else .6, .4 if year == 2000 else .8,
+                              .1 if year == 2000 else .3)
         result["validGridPoints"] = 1 if year == 2000 else 4
         return result
     monkeypatch.setattr(C, "case_summary", case)
     result = C.comparison(2001, 7, "focus", "all")
+    assert result["models"] == ["LSTM", "ASTGRN", "STDN"]
     assert result["curve"][0]["LSTM"] == pytest.approx(.4)
     assert result["curve"][0]["ASTGRN"] == pytest.approx(.6)
+    assert result["curve"][0]["STDN"] == pytest.approx(.2)
     assert result["rows"][0]["meanGridR"] == .6
     assert result["delta"]["meanGridR"] == pytest.approx(.2)
     assert result["delta"]["rmse"] == -1
+    assert result["deltaSTDN"]["meanGridR"] == pytest.approx(.5)
+    assert result["deltaSTDN"]["rmse"] == -3
+    assert result["deltaSTDN"]["mae"] == pytest.approx(-1.5)
     assert result["coverage"]["availableCases"] == 40
 
 
@@ -136,36 +150,36 @@ def test_missing_current_case_errors_and_partial_curve_is_null(monkeypatch):
     def case(year, lead, region):
         if lead == 2:
             raise HTTPException(404, "missing run 1")
-        return stub_summary(.2, .4)
+        return stub_summary(.2, .4, .1)
     monkeypatch.setattr(C, "case_summary", case)
     with pytest.raises(HTTPException) as error:
         C.comparison(2001, 2)
     assert error.value.status_code == 404
     result = C.comparison(2001, 1)
-    assert result["curve"][1] == {"lead": 2, "LSTM": None, "ASTGRN": None}
+    assert result["curve"][1] == {"lead": 2, "LSTM": None, "ASTGRN": None, "STDN": None}
     assert result["coverage"]["availableCases"] == 19
     assert result["coverage"]["missing"][0]["lead"] == 2
 
 
 def test_undefined_case_is_not_counted_as_available_curve_evidence(monkeypatch):
     def case(year, lead, region):
-        return stub_summary(None, None) if lead == 2 else stub_summary(.2, .4)
+        return stub_summary(None, None, None) if lead == 2 else stub_summary(.2, .4, .1)
     monkeypatch.setattr(C, "case_summary", case)
     result = C.comparison(2001, 1)
     assert result["coverage"]["availableCases"] == 19
     assert result["coverage"]["byLead"][1]["availableYears"] == 0
     assert result["coverage"]["missing"][0]["status"] == "undefined"
-    assert result["curve"][1] == {"lead": 2, "LSTM": None, "ASTGRN": None}
+    assert result["curve"][1] == {"lead": 2, "LSTM": None, "ASTGRN": None, "STDN": None}
 
 
 def test_missing_file_and_cache_revision(monkeypatch, tmp_path):
-    roots = {"LSTM": tmp_path / "lstm", "ASTGRN": tmp_path / "astgrn"}
+    roots = {"LSTM": tmp_path / "lstm", "ASTGRN": tmp_path / "astgrn", "STDN": tmp_path / "stdn"}
     monkeypatch.setattr(C, "DATA_ROOTS", roots)
     with pytest.raises(HTTPException) as error:
         C.case_summary(2001, 1, "focus")
     assert error.value.status_code == 404
-    lp, truth, ap, _ = fields()
-    for model, pred in (("LSTM", lp), ("ASTGRN", ap)):
+    lp, truth, ap, _, sp, _ = fields()
+    for model, pred in (("LSTM", lp), ("ASTGRN", ap), ("STDN", sp)):
         save_case(roots[model], 2001, 1, pred, truth)
     assert C.case_summary(2001, 1, "focus")["rows"][0]["rmse"] == 1
     save_case(roots["LSTM"], 2001, 1, lp + 4, truth)

@@ -4,14 +4,14 @@
 
 CIO-RainCast connects Central Indian Ocean (CIO) projection diagnostics to machine-learning rainfall forecasts. Users can explore the U850 input fields, projected CIO series, normalized inputs, spatial forecast skill, and prediction–observation differences for a selected year and forecast lead.
 
-This repository contains the demonstration application for an ongoing research project. The current interface serves precomputed **ASTGRN** rainfall products and compares them with CIO-input **LSTM** products. The ASTGRN training pipeline and research datasets are maintained separately. No WSDM acceptance or publication is claimed.
+This repository contains the demonstration application for an ongoing research project. The current interface serves precomputed **ASTGRN** rainfall products and compares them with CIO-input **LSTM** and **STDN** products. The ASTGRN training pipeline and research datasets are maintained separately. No WSDM acceptance or publication is claimed.
 
 ## Features
 
 - **Inspect the predictor:** raw U850 anomalies, preprocessed fields, daily grid contributions, projection closure, and a reference EOF1 map.
 - **Follow the prediction workflow:** projected CIO time series and the normalized 112-step input window.
 - **Explore rainfall forecasts:** grid-point correlations, linked time series, and Prediction / Observation / Error maps.
-- **Compare methods:** LSTM and ASTGRN correlations across forecast leads, regional RMSE and MAE, and CSV exports.
+- **Compare methods:** LSTM, ASTGRN, and STDN correlations across forecast leads, regional RMSE and MAE, and CSV exports. Distinct colors identify the three solid curves.
 - **Compare dates consistently:** the rainfall color scale stays fixed over the selected 112-step window and is recomputed when the year or lead changes.
 
 ![Rainfall prediction interface](docs/images/rainfall-map.jpg)
@@ -87,7 +87,7 @@ The frontend development server proxies `/api` to port 8000. See [Deployment](do
 2. Move the projection-date slider to inspect U850 fields and their CIO contributions.
 3. Follow the projected series into the normalized input window.
 4. Inspect the skill map, select a grid point, and compare its predicted and observed time series.
-5. Switch between **Prediction**, **Observation**, and **Error**, or explore the LSTM–ASTGRN comparison and export its metrics.
+5. Switch between **Prediction**, **Observation**, and **Error**, or explore the LSTM–ASTGRN–STDN comparison and export its metrics.
 
 The stored EOF1 map is a spatial reference. Projection closure checks numerical reconstruction of the CIO index; it does not establish physical causality or forecast skill. The paired model comparison evaluates stored prediction methods, rather than isolating the causal benefit of CIO inputs. Metric definitions and implementation limits are documented in [Reproducibility](docs/reproducibility.md).
 

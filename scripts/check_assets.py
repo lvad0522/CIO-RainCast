@@ -51,8 +51,11 @@ def main():
         checks.append({"asset": "cache identity", "ok": valid})
     optional_lstm = all(Path(dataset_file_path(ROOT / "Dataset", args.lead, args.year, 1, kind)).is_file()
                         for kind in ("predict2", "real2"))
+    optional_stdn = all(Path(dataset_file_path(ROOT / "Dataset-STDN", args.lead, args.year, 1, kind)).is_file()
+                        for kind in ("predict2", "real2"))
     print(json.dumps({"year": args.year, "lead": args.lead, "checks": checks,
-                      "optional_lstm_comparison": optional_lstm}, indent=2))
+                      "optional_lstm_comparison": optional_lstm,
+                      "optional_stdn_comparison": optional_stdn}, indent=2))
     return 0 if all(check["ok"] for check in checks) else 1
 
 

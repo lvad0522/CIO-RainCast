@@ -23,6 +23,7 @@ coverage/
 # Research data, weights, and generated diagnostics
 Dataset/
 Dataset-AGCRN/
+Dataset-STDN/
 data/
 model/
 models/

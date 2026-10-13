@@ -1551,7 +1551,7 @@ input, button, select { font: inherit; }
 .cio-comparison-curve-heading { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: #45626f; font-size: 11px; margin-bottom: 6px; }
 .cio-comparison-legend { display: flex; gap: 14px; }
 .cio-comparison-legend > span { display: inline-flex; align-items: center; gap: 5px; }
-.cio-comparison-legend i { width: 17px; border-top: 2.5px solid currentColor; }
+.cio-comparison-legend svg { display: block; flex-shrink: 0; }
 .cio-comparison-chart { min-width: 0; width: 100%; }
 .cio-comparison-coverage { margin: 3px 0 16px; color: #758894; font-size: 10px; line-height: 1.5; }
 .cio-comparison-table-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; margin-bottom: 8px; color: #345b6b; font-size: 11px; font-weight: 600; }

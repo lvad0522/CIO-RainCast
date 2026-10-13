@@ -16,15 +16,14 @@ The 112-day contribution summary averages the absolute daily grid contributions,
 
 The demonstration reads existing ASTGRN rainfall products. The corresponding training implementation and checkpoints are outside this repository. The retained optional online inference routes are for the legacy LSTM models.
 
-The skill map uses the selected stored correlation product. The paired LSTM–ASTGRN module recomputes correlations from forecast and observation arrays instead of selecting values from legacy correlation channels:
+The skill map uses the selected stored correlation product. The LSTM–ASTGRN–STDN module recomputes correlations from forecast and observation arrays instead of selecting values from legacy correlation channels:
 
-- Both methods use stored run 1 and must have compatible observations.
-- A grid-point Pearson correlation uses shared finite time samples. The regional summary averages the grid points where both methods have defined correlations.
-- RMSE and MAE pool common finite grid-point/time pairs in the selected region.
+- All three methods use stored run 1 and must have compatible observations.
+- A grid-point Pearson correlation uses finite time samples shared by all three methods. The regional summary averages the grid points where all three correlations are defined.
+- RMSE and MAE pool common finite grid-point/time pairs across all three methods in the selected region.
 - Across-year correlation curves give each available paired year equal weight.
-- The displayed difference is ASTGRN minus LSTM.
 
-The two training setups differ. This is a comparison of prediction methods sharing the CIO signal, not a controlled architecture ablation or an experiment isolating the contribution of CIO. The S2S panel is also not a CIO-input ablation.
+The training setups differ. This is a comparison of prediction methods sharing the CIO signal, not a controlled architecture ablation or an experiment isolating the contribution of CIO. The S2S panel is also not a CIO-input ablation.
 
 Focus-region area-mean time-series metrics and mean grid-point correlations are different statistics. The UI reports both with separate labels.
 

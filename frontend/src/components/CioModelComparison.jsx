@@ -4,23 +4,15 @@ import {
   Tooltip, XAxis, YAxis,
 } from 'recharts';
 
-const MODELS = ['LSTM', 'ASTGRN'];
-const COLORS = { LSTM: '#c27835', ASTGRN: '#245c8a' };
+const MODELS = ['LSTM', 'ASTGRN', 'STDN'];
+const MODEL_STYLES = {
+  LSTM: { color: '#D55E00', width: 2.5 },
+  ASTGRN: { color: '#0072B2', width: 3 },
+  STDN: { color: '#009E73', width: 2.5 },
+};
 
 function formatMetric(value, digits = 4) {
   return Number.isFinite(value) ? value.toFixed(digits) : '—';
-}
-
-function formatDelta(value) {
-  if (!Number.isFinite(value)) return '—';
-  if (Math.abs(value) < 0.00005) return '0.0000';
-  return `${value > 0 ? '+' : ''}${value.toFixed(4)}`;
-}
-
-function deltaClass(value, higherIsBetter) {
-  if (!Number.isFinite(value) || Math.abs(value) < 0.00005) return '';
-  return (higherIsBetter ? value > 0 : value < 0)
-    ? 'cio-comparison-better' : 'cio-comparison-worse';
 }
 
 function csvCell(value) {
@@ -54,9 +46,8 @@ function buildComparisonCsv(data) {
     ...metadata, [],
     ['Model (current year and lead)', 'Mean grid-point r', 'RMSE (mm/day)', 'MAE (mm/day)', 'Run'],
     ...(data.rows || []).map(row => [row.model, row.meanGridR, row.rmse, row.mae, row.fold ?? 1]),
-    ['ASTGRN - LSTM', data.delta?.meanGridR, data.delta?.rmse, data.delta?.mae, 1],
-    [], ['Lead', 'LSTM mean grid-point r', 'ASTGRN mean grid-point r'],
-    ...(data.curve || []).map(point => [point.lead, point.LSTM, point.ASTGRN]),
+    [], ['Lead', 'LSTM mean grid-point r', 'ASTGRN mean grid-point r', 'STDN mean grid-point r'],
+    ...(data.curve || []).map(point => [point.lead, point.LSTM, point.ASTGRN, point.STDN]),
   ];
   return rows.map(row => row.map(csvCell).join(',')).join('\r\n');
 }
@@ -127,7 +118,7 @@ export default function CioModelComparison({ year, lead, apiBase = '' }) {
   const hasCurve = data?.curve?.some(point => MODELS.some(model => Number.isFinite(point[model])));
   const coverage = data ? curveCoverage(data) : null;
   const curveValues = (data?.curve || []).flatMap(point => MODELS.map(model => point[model])).filter(Number.isFinite);
-  // Include zero while keeping the two model curves legible in a compact card.
+  // Include zero while keeping the model curves legible in a compact card.
   const curveDomain = curveValues.length ? [
     Math.max(-1, Math.min(0, Math.floor((Math.min(...curveValues) - .05) * 10) / 10)),
     Math.min(1, Math.max(.1, Math.ceil((Math.max(...curveValues) + .05) * 10) / 10)),
@@ -161,10 +152,16 @@ export default function CioModelComparison({ year, lead, apiBase = '' }) {
       <div className="cio-comparison-curve-heading">
         <span>{scope === 'all' ? `${coverage.yearLabel} · equal-weight year mean` : `${data.year} · lead-time comparison`}</span>
         <span className="cio-comparison-legend">
-          {MODELS.map(model => <span key={model} style={{ color: COLORS[model] }}><i aria-hidden="true" />{model}</span>)}
+          {MODELS.map(model => <span key={model} style={{ color: MODEL_STYLES[model].color }}>
+            <svg width="28" height="10" viewBox="0 0 28 10" aria-hidden="true">
+              <line x1="1" y1="5" x2="27" y2="5" stroke="currentColor"
+                strokeWidth={MODEL_STYLES[model].width} strokeLinecap="round" />
+            </svg>
+            {model}
+          </span>)}
         </span>
       </div>
-      {hasCurve ? <div className="cio-comparison-chart" role="img" aria-label={`Mean grid-point correlation by lead for LSTM and ASTGRN, ${scope === 'all' ? coverage.yearLabel : data.year}, ${data.regionLabel || region}`}>
+      {hasCurve ? <div className="cio-comparison-chart" role="img" aria-label={`Mean grid-point correlation by lead for LSTM, ASTGRN and STDN, ${scope === 'all' ? coverage.yearLabel : data.year}, ${data.regionLabel || region}`}>
         <ResponsiveContainer width="100%" height={210}>
           <LineChart data={data.curve} margin={{ top: 10, right: 15, bottom: 22, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e1e9ed" />
@@ -175,8 +172,10 @@ export default function CioModelComparison({ year, lead, apiBase = '' }) {
             <Tooltip formatter={value => formatMetric(value)} labelFormatter={value => `Lead time: ${value} days`} />
             <ReferenceLine y={0} stroke="#a3b4be" />
             <ReferenceLine x={leadNumber} stroke="#697d88" strokeDasharray="3 3" />
-            {MODELS.map(model => <Line key={model} dataKey={model} type="linear" stroke={COLORS[model]}
-              strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} connectNulls={false} isAnimationActive={false} />)}
+            {MODELS.map(model => <Line key={model} dataKey={model} type="linear" stroke={MODEL_STYLES[model].color}
+              strokeWidth={MODEL_STYLES[model].width} strokeLinecap="round"
+              dot={false} activeDot={{ r: 4, fill: MODEL_STYLES[model].color, stroke: '#fff', strokeWidth: 1 }}
+              connectNulls={false} isAnimationActive={false} />)}
           </LineChart>
         </ResponsiveContainer>
       </div> : <p className="cio-comparison-state">No paired lead-time results are available for this selection.</p>}
@@ -188,15 +187,9 @@ export default function CioModelComparison({ year, lead, apiBase = '' }) {
         <table className="cio-comparison-table">
           <thead><tr><th scope="col">Model</th><th scope="col">Mean grid-point r</th><th scope="col">RMSE<br /><small>mm/day</small></th><th scope="col">MAE<br /><small>mm/day</small></th></tr></thead>
           <tbody>{rows.filter(Boolean).map(row => <tr key={row.model}>
-            <th scope="row"><span style={{ color: COLORS[row.model] }}>{row.model}</span></th>
+            <th scope="row"><span style={{ color: MODEL_STYLES[row.model].color }}>{row.model}</span></th>
             <td>{formatMetric(row.meanGridR)}</td><td>{formatMetric(row.rmse, 3)}</td><td>{formatMetric(row.mae, 3)}</td>
           </tr>)}</tbody>
-          <tfoot><tr>
-            <th scope="row">ASTGRN − LSTM</th>
-            <td className={deltaClass(data.delta?.meanGridR, true)}>{formatDelta(data.delta?.meanGridR)}</td>
-            <td className={deltaClass(data.delta?.rmse, false)}>{formatDelta(data.delta?.rmse)}</td>
-            <td className={deltaClass(data.delta?.mae, false)}>{formatDelta(data.delta?.mae)}</td>
-          </tr></tfoot>
         </table>
       </div> : <p className="cio-comparison-state">The selected year and lead do not have paired model results.</p>}
     </>}
