@@ -5,6 +5,8 @@ import {
 import { getHeatColor, HEAT_COLOR_NODES } from '../utils/heatColor';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
+// Keep the window-average summary available in code, outside the main demo.
+const SHOW_REFERENCE_CONTRIBUTION_SUMMARY = false;
 const U850_STAGE_TITLES = {
   input: 'Raw U850 anomaly · Central Indian Ocean',
   processed: 'Preprocessed U850 · Central Indian Ocean',
@@ -811,7 +813,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
         </div>
       )}
 
-      <div className="result-card projection-weight-card">
+      {SHOW_REFERENCE_CONTRIBUTION_SUMMARY && <div className="result-card projection-weight-card">
         <div className="result-header">
           <h3 className="result-title" style={{ margin: 0 }}>
             {previewEnabled ? 'CIO contribution & reference EOF1 pattern' : 'Reference EOF1 pattern'} · 20°S–20°N, 40°E–120°E
@@ -839,7 +841,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
             <p className="field-meta">Stored EOF1 spatial structure, shown as a reference.</p>
           </section>
         </div>
-      </div>
+      </div>}
     </>
   );
 }
