@@ -18,4 +18,9 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    // The `node --test` suite reads the baked fixtures off disk.
+    files: ['test/**/*.js'],
+    languageOptions: { globals: globals.node },
+  },
 ])

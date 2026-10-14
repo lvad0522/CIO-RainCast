@@ -4,10 +4,11 @@ import {
 } from 'recharts';
 import { getHeatColor } from '../utils/heatColor';
 import { rainfallScaleMax } from '../utils/rainfallScale';
+import { isStaticMode, staticAssetUrl } from '../staticMode';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const CELL_SCALE = 6;
-const GEO_URL = '/geo/east_asia_coastline.json?v=1';
+const GEO_URL = `${import.meta.env.BASE_URL}geo/east_asia_coastline.json?v=1`;
 const MAP_ROWS = 81;
 const MAP_COLS = 101;
 const CONTOUR_LEVEL = 0.5;
@@ -205,6 +206,7 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
   const [selectedPearsonGrid, setSelectedPearsonGrid] = useState(null);
   const [geoData, setGeoData] = useState(null);
   const [error, setError] = useState(null);
+  const [focusDownloadUrl, setFocusDownloadUrl] = useState(null);
   const canvasRef = useRef(null);
   const rCanvasRef = useRef(null);
 
@@ -233,6 +235,16 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
       });
     return () => controller.abort();
   }, []);
+
+  // 静态演示站：CSV 下载走烘焙文件（<a href> 不经 fetch 垫片）。其他构建保持原 URL。
+  useEffect(() => {
+    let alive = true;
+    if (!isStaticMode()) return undefined;
+    staticAssetUrl(`${root}/download/focus-region`).then(url => {
+      if (alive && url) setFocusDownloadUrl(url);
+    });
+    return () => { alive = false; };
+  }, [root]);
 
   // 误差取同一任务、同一Day的预测减实况，沿用原始网格顺序。
   useEffect(() => {
@@ -586,7 +598,7 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
                 </section>
               </div>
               <></>
-              <a className="download-prediction-btn" href={`${root}/download/focus-region`} download>
+              <a className="download-prediction-btn" href={focusDownloadUrl || `${root}/download/focus-region`} download>
                 Download daily focus-region CSV
               </a>
             </div>

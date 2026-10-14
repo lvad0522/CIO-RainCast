@@ -4,6 +4,8 @@
 
 CIO-RainCast connects Central Indian Ocean (CIO) projection diagnostics to machine-learning rainfall forecasts. Users can explore the U850 input fields, projected CIO series, normalized inputs, spatial forecast skill, and prediction–observation differences for a selected year and forecast lead.
 
+**Live demo:** <https://lvad0522.github.io/CIO-RainCast/> — a static build with all 400 year × lead combinations pre-baked; the heavy payloads are streamed from a companion Hugging Face dataset, so no installation or backend is required (see [Static demo site](docs/deployment.md#static-demo-site)).
+
 This repository contains the demonstration application for an ongoing research project. The current interface serves precomputed **ASTGRN** rainfall products and compares them with CIO-input **LSTM** and **STDN** products. The ASTGRN training pipeline and research datasets are maintained separately. No WSDM acceptance or publication is claimed.
 
 ## Features
@@ -98,8 +100,8 @@ CIO-RainCast/
 ├── backend/           # FastAPI routes, projection, diagnostics, and verification
 ├── frontend/          # React / Vite interface and local geographic assets
 ├── docs/              # Data, deployment, and reproducibility documentation
-├── scripts/           # Asset checks
-├── .github/workflows/ # Automated frontend and numerical checks
+├── scripts/           # Asset checks, demo-data bake and upload
+├── .github/workflows/ # Automated frontend and numerical checks, Pages deploy
 └── start.py           # Local development launcher
 ```
 

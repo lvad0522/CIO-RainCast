@@ -9,6 +9,7 @@ import DatasetEvaluation from './components/DatasetEvaluation';
 import CioModelComparison from './components/CioModelComparison';
 import CioProjectionResult from './components/CioProjectionResult';
 import NormalizationPanel from './components/NormalizationPanel';
+import { staticCaseInfo } from './staticMode';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_DATA_API_BASE || import.meta.env.VITE_API_BASE || '';
@@ -29,6 +30,8 @@ export default function App() {
   const [error, setError] = useState(null);
   const [selectedFold, setSelectedFold] = useState(null);
   const [grid, setGrid] = useState({ i: 40, j: 50 });
+  // 静态演示站：当前组合是否带逐日场与格点序列（普通构建恒为 null，不参与判断）。
+  const [caseInfo, setCaseInfo] = useState(null);
   const requests = useRef(null);
   const gridRequests = useRef(null);
 
@@ -41,13 +44,16 @@ export default function App() {
     setError(null);
     setResults(null);
     setJob(null);
+    setCaseInfo(null);
     const query = new URLSearchParams({ year: selection.predYear, lead: selection.leadTime });
     const settled = await Promise.allSettled([
       read(`/api/run?${query}&region=eastasia`, controller.signal),
       read(`/api/default-cio?${query}`, controller.signal),
+      staticCaseInfo(selection.predYear, selection.leadTime),
     ]);
     if (controller.signal.aborted) return;
-    const [rain, cio] = settled;
+    const [rain, cio, info] = settled;
+    if (info.status === 'fulfilled') setCaseInfo(info.value);
     if (rain.status === 'fulfilled') {
       setResults({ ...rain.value, year: selection.predYear, lead: selection.leadTime });
       setSelectedFold(rain.value.table?.[0]?.experiment);
@@ -85,6 +91,9 @@ export default function App() {
   // 回落只能是 'LSTM'：没有 model 字段的后端 = 2026-10-12 换树之前起的旧代码，旧代码只有
   // LSTM 树；回落到 'ASTGRN' 才会把旧数据标错名（8001 上现挂的旧后端即此情形）。
   const modelName = results?.model || 'LSTM';
+  // 静态演示站：数据集里每个组合都带逐日场/格点序列；只有烘焙时没写完整层的
+  // 数据集才会把 caseInfo.full 置为 false。普通构建 caseInfo 为 null → 全放开。
+  const dailyAvailable = !caseInfo || caseInfo.full;
 
   return <div className="app" lang="en">
     <aside className="sidebar">
@@ -128,14 +137,21 @@ export default function App() {
       {results && <section id="rainfall" className="chain-stage-group">
         <h2 className="chain-stage-heading">03 / East Asian rainfall · {results.year} · {String(results.lead).replace('pre', '')}-day lead</h2>
         <div className="result-row overview-row">
-          <div className="result-col"><SkillMap key={`${results.year}-${results.lead}`} data={results.skillMap} region="eastasia" onGridClick={handleGridClick} /></div>
+          <div className="result-col"><SkillMap key={`${results.year}-${results.lead}`} data={results.skillMap} region="eastasia" onGridClick={dailyAvailable ? handleGridClick : undefined} /></div>
           <div className="result-col">
             <ModelCompareChart data={results.s2s} />
             <CioModelComparison year={results.year} lead={results.lead} apiBase={API_BASE} />
           </div>
         </div>
         <TimeSeriesChart data={results.timeSeries} gridLabel={`${(100 + grid.j * .25).toFixed(2)}°E, ${(20 + grid.i * .25).toFixed(2)}°N`} />
-        <DatasetEvaluation key={`${results.year}-${results.lead}-${selectedFold}`} year={results.year} lead={results.lead} fold={selectedFold} />
+        {!dailyAvailable && <p className="static-demo-note" role="status">
+          Day-by-day fields and grid-point time series are missing from this static demo dataset, so clicking the skill map is disabled here.
+        </p>}
+        {dailyAvailable
+          ? <DatasetEvaluation key={`${results.year}-${results.lead}-${selectedFold}`} year={results.year} lead={results.lead} fold={selectedFold} />
+          : <p className="static-demo-note" role="status">
+            The evaluation panel (daily prediction / observation / error fields and downloads) is missing from this static demo dataset.
+          </p>}
       </section>}
     </main>
   </div>;

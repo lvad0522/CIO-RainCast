@@ -26,7 +26,7 @@ export default function EastAsiaU850({ job, apiBase = '', timeIndex = 0, MapComp
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch('/geo/east_asia_coastline.json', { signal: controller.signal })
+    fetch(`${import.meta.env.BASE_URL}geo/east_asia_coastline.json`, { signal: controller.signal })
       .then(response => response.ok ? response.json() : null)
       .then(setCoastlines)
       .catch(() => {});

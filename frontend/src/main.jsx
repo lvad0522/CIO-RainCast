@@ -1,3 +1,6 @@
+// 静态演示模式（VITE_STATIC_MODE=1）：必须在首个请求之前装好 fetch 垫片，
+// 因此放在所有 import 之前。普通构建/dev 下该模块不碰 window.fetch。
+import './staticMode.js'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'

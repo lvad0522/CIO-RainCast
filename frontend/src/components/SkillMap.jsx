@@ -60,7 +60,7 @@ function gaussianSmooth(grid) {
 // ── 地理底图（2026-08-30：cartopy 50m 抽稀导出，public/geo/east_asia_coastline.json）──
 // 结构 {"coast": [[lon,lat]...], "borders": [[lon,lat]...]}（线段数组）；
 // URL 带版本号防生产构建缓存失效（重跑导出脚本后递增）。
-const GEO_URL = '/geo/east_asia_coastline.json?v=1';
+const GEO_URL = `${import.meta.env.BASE_URL}geo/east_asia_coastline.json?v=1`;
 
 // ── color scale约定（与 CIO/Pearson 空间图共享）──
 // Range [-1, 1]，零点位于色标中心；

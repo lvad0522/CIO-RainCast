@@ -8,3 +8,7 @@
 *.yml text eol=lf
 *.jpg binary
 *.png binary
+
+# Baked static-demo payloads (gzipped JSON, float32 arrays, CSV exports): store
+# and serve byte-for-byte; never apply line-ending conversion to them.
+frontend/public/demo-data/** binary

@@ -13,7 +13,7 @@ const U850_STAGE_TITLES = {
 
 const DOMAIN_LON_TICKS = [40, 60, 80, 100, 120];
 const DOMAIN_LAT_TICKS = [-20, -10, 0, 10, 20];
-const COASTLINE_URL = '/geo/cio_domain_coastline.json';
+const COASTLINE_URL = `${import.meta.env.BASE_URL}geo/cio_domain_coastline.json`;
 const DIVERGING_GRADIENT = `linear-gradient(90deg, ${HEAT_COLOR_NODES
   .map(([position, color]) => `${color} ${position * 100}%`)
   .join(', ')})`;
