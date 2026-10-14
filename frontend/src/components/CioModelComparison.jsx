@@ -167,8 +167,9 @@ export default function CioModelComparison({ year, lead, apiBase = '' }) {
             <CartesianGrid strokeDasharray="3 3" stroke="#e1e9ed" />
             <XAxis dataKey="lead" type="number" domain={[1, 20]} ticks={[1, 5, 10, 15, 20]} fontSize={11} tickMargin={6}
               label={{ value: 'Lead time (days)', position: 'insideBottom', offset: -13, fontSize: 11 }} />
-            <YAxis domain={curveDomain} tickCount={5} width={48} fontSize={11}
-              label={{ value: 'Mean grid r', angle: -90, position: 'insideLeft', offset: 9, fontSize: 11 }} />
+            <YAxis domain={curveDomain} tickCount={5} width={72} fontSize={11} tickMargin={8}
+              tickFormatter={value => Number(value.toFixed(3))}
+              label={{ value: 'Mean grid r', angle: -90, position: 'insideLeft', offset: 9, fontSize: 11, textAnchor: 'middle' }} />
             <Tooltip formatter={value => formatMetric(value)} labelFormatter={value => `Lead time: ${value} days`} />
             <ReferenceLine y={0} stroke="#a3b4be" />
             <ReferenceLine x={leadNumber} stroke="#697d88" strokeDasharray="3 3" />
