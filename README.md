@@ -12,7 +12,7 @@ This repository contains the demonstration application for an ongoing research p
 
 ## Features
 
-- **Inspect the predictor:** raw U850 anomalies, preprocessed fields, daily grid contributions, projection closure, and a reference EOF1 map.
+- **Inspect the predictor:** raw U850 anomalies, preprocessed fields, daily grid contributions, and projection closure.
 - **Follow the prediction workflow:** projected CIO time series and the normalized 112-step input window.
 - **Explore rainfall forecasts:** grid-point correlations, linked time series, and Prediction / Observation / Error maps.
 - **Compare methods:** LSTM, ASTGRN, and STDN correlations across forecast leads, regional RMSE and MAE, and CSV exports. Distinct colors identify the three solid curves.
@@ -45,11 +45,46 @@ The default page loads completed projection artifacts and historical predictions
 
 ## Quick start
 
-Requirements: **Python 3.11+**, **Node.js 22.12+** (Node 24 recommended), and npm. Historical exploration does not require a GPU.
-
 ```bash
 git clone https://github.com/lvad0522/CIO-RainCast.git
 cd CIO-RainCast
+```
+
+### Static demo
+
+Requires **Node.js 22.12+** (Node 24 recommended) and npm. The static demo uses the prepared files included in the repository and on Hugging Face; Python, model checkpoints, and the original research datasets are not needed.
+
+```bash
+cd frontend
+npm ci
+```
+
+Keep `VITE_API_BASE` and `VITE_DATA_API_BASE` unset for static mode, including in any `.env.local` or `.env.production` files.
+
+Linux/macOS:
+
+```bash
+VITE_STATIC_MODE=1 npm run build
+npm run preview -- --host 127.0.0.1 --port 4173 --strictPort
+```
+
+PowerShell:
+
+```powershell
+Remove-Item Env:VITE_API_BASE, Env:VITE_DATA_API_BASE -ErrorAction SilentlyContinue
+$env:VITE_STATIC_MODE = '1'
+npm run build
+Remove-Item Env:VITE_STATIC_MODE
+npm run preview -- --host 127.0.0.1 --port 4173 --strictPort
+```
+
+Open **http://127.0.0.1:4173/**. The default 2000 / 20-day case is included with the site. Other cases load their larger files from Hugging Face, as described in the loading note above.
+
+### Backend mode
+
+Requires **Python 3.11+**, Node.js, npm, and the research assets described below. Leave `VITE_STATIC_MODE` unset in this mode. From the repository root:
+
+```bash
 python -m venv .venv
 ```
 
@@ -62,7 +97,7 @@ npm ci
 cd ..
 ```
 
-**Research assets are supplied separately.** A checkout contains the application and tests, but cannot display the historical results until the required data and projection artifacts are installed. Follow [Data setup](docs/data-setup.md), then check a case:
+**Backend mode requires research assets supplied separately.** Follow [Data setup](docs/data-setup.md) to install the forecast arrays and projection artifacts, then check a case:
 
 ```bash
 python scripts/check_assets.py --year 2001 --lead 1
@@ -93,7 +128,7 @@ The frontend development server proxies `/api` to port 8000. See [Deployment](do
 4. Inspect the skill map, select a grid point, and compare its predicted and observed time series.
 5. Switch between **Prediction**, **Observation**, and **Error**, or explore the LSTM–ASTGRN–STDN comparison and export its metrics.
 
-The stored EOF1 map is a spatial reference. Projection closure checks numerical reconstruction of the CIO index; it does not establish physical causality or forecast skill. The paired model comparison evaluates stored prediction methods, rather than isolating the causal benefit of CIO inputs. Metric definitions and implementation limits are documented in [Reproducibility](docs/reproducibility.md).
+Projection closure checks numerical reconstruction of the CIO index; it does not establish physical causality or forecast skill. The paired model comparison evaluates stored prediction methods, rather than isolating the causal benefit of CIO inputs. Metric definitions and implementation limits are documented in [Reproducibility](docs/reproducibility.md).
 
 ## Repository structure
 
@@ -117,7 +152,7 @@ npm run lint
 npm test
 ```
 
-These tests use small fixtures and do not require the research datasets. Build the frontend with an explicit API URL as described in [Deployment](docs/deployment.md).
+These tests use small fixtures and do not require the research datasets. Production builds use `VITE_STATIC_MODE=1` for the static demo or `VITE_API_BASE` for a backend connection; see [Deployment](docs/deployment.md).
 
 ## Related research
 
@@ -126,4 +161,4 @@ These tests use small fixtures and do not require the research datasets. Build t
 
 ## License and third-party assets
 
-This private research snapshot has no assigned open-source code license. Dataset and checkpoint redistribution are handled separately. Natural Earth land data are public domain; dependency and geographic-asset attribution is listed in [Third-party assets](docs/third-party-assets.md).
+This repository has no assigned open-source code license. Dataset and checkpoint redistribution are handled separately. Natural Earth land data are public domain; dependency and geographic-asset attribution is listed in [Third-party assets](docs/third-party-assets.md).

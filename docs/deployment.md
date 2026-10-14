@@ -21,9 +21,9 @@ $env:VITE_API_BASE = 'http://127.0.0.1:8002'
 npm run dev -- --port 5177 --strictPort
 ```
 
-## Production frontend build
+## Backend-connected production build
 
-The Vite configuration requires `VITE_API_BASE` during a production build. From `frontend/`:
+For a frontend connected to FastAPI, the Vite configuration requires `VITE_API_BASE` during a production build. Leave `VITE_STATIC_MODE` unset. From `frontend/`:
 
 ```bash
 VITE_API_BASE=http://127.0.0.1:8000 npm run build
@@ -38,7 +38,7 @@ Alternatively, copy `.env.example` to `.env.local` and set the API address there
 
 ## Static demo site
 
-The public demo at <https://lvad0522.github.io/CIO-RainCast/> is a pure static site: the built frontend reads every `/api/*` response from pre-baked files and no backend, dataset, or model checkpoint is deployed. The mapping lives in `frontend/src/staticMode.js` and is only active in a build made with `VITE_STATIC_MODE=1`.
+The public demo at <https://lvad0522.github.io/CIO-RainCast/> is a static site. The frontend reads prepared files from GitHub Pages and Hugging Face and needs no running backend or model checkpoints. The request mapping lives in `frontend/src/staticMode.js` and is only active in a build made with `VITE_STATIC_MODE=1`.
 
 ### Bake the demo data
 
@@ -77,12 +77,31 @@ Uploading is a one-time step per data change. `--proxy http://127.0.0.1:10808` i
 
 ### Build and preview
 
+The prepared demo files are already committed. Building the existing snapshot requires Node.js and npm; the bake and upload steps above are needed only when updating its data. Keep `VITE_API_BASE` and `VITE_DATA_API_BASE` unset in the shell and any `.env.local` or `.env.production` files.
+
+Linux/macOS:
+
 ```bash
 cd frontend
 VITE_STATIC_MODE=1 npm run build
 ```
 
-`VITE_STATIC_MODE=1` and `VITE_API_BASE` are mutually exclusive; the build fails if both are set. To preview the way GitHub Pages serves the site (project subpath), serve the build from a parent directory named after the repository:
+PowerShell, from `frontend/`:
+
+```powershell
+Remove-Item Env:VITE_API_BASE, Env:VITE_DATA_API_BASE -ErrorAction SilentlyContinue
+$env:VITE_STATIC_MODE = '1'
+npm run build
+Remove-Item Env:VITE_STATIC_MODE
+```
+
+Preview at **http://127.0.0.1:4173/**:
+
+```bash
+npm run preview -- --host 127.0.0.1 --port 4173 --strictPort
+```
+
+`VITE_STATIC_MODE=1` and `VITE_API_BASE` are mutually exclusive; the build fails if both are set. To check the GitHub Pages project subpath, an optional Python-based preview is:
 
 ```bash
 mkdir -p /tmp/CIO-RainCast && cp -r dist/. /tmp/CIO-RainCast/
