@@ -6,6 +6,8 @@ CIO-RainCast connects Central Indian Ocean (CIO) projection diagnostics to machi
 
 **Live demo:** <https://lvad0522.github.io/CIO-RainCast/> — a static build with all 400 year × lead combinations pre-baked; the opening case (2000, 20-day lead) is complete inside the site itself and the remaining heavy payloads stream from a companion Hugging Face dataset, so no installation or backend is required (see [Static demo site](docs/deployment.md#static-demo-site)).
 
+**Loading time:** Some rainfall and U850 panels fetch large files from Hugging Face on demand. After selecting a new year or lead, please allow time for these panels to load; the wait depends on your connection.
+
 This repository contains the demonstration application for an ongoing research project. The current interface serves precomputed **ASTGRN** rainfall products and compares them with CIO-input **LSTM** and **STDN** products. The ASTGRN training pipeline and research datasets are maintained separately. No WSDM acceptance or publication is claimed.
 
 ## Features
