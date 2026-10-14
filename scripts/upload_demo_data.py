@@ -16,10 +16,13 @@ Usage::
     python scripts/upload_demo_data.py               # 上传（可断点续传，重复跑即可）
     python scripts/upload_demo_data.py --verify      # 抽查线上 URL
 
-The default repository is ``lvad0522/CIO-RainCast-demo-data``; if you use a
+The default repository is ``Anthony1919826/CIO-RainCast-demo-data`` (the
+account the published manifest points at); if you use a
 different one, pass ``--repo`` (and ``--write-manifest`` so the site's
 ``manifest.json`` points at it).  ``--proxy http://127.0.0.1:10808`` is honoured
-for users who need a local proxy to reach huggingface.co.
+for users who need a local proxy to reach huggingface.co; such runs also
+disable hf-xet, because the xet transfer path was observed to stall behind a
+local proxy while the classic requests-based path kept uploading.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ FRONTEND = next(
 )
 DEFAULT_REMOTE_OUT = ROOT / "tmp" / "demo-data-remote"
 DEFAULT_MANIFEST = FRONTEND / "public" / "demo-data" / "manifest.json"
-DEFAULT_REPO = "lvad0522/CIO-RainCast-demo-data"
+DEFAULT_REPO = "Anthony1919826/CIO-RainCast-demo-data"
 REMOTE_PREFIX = "remote:"
 
 
@@ -200,7 +203,13 @@ def main() -> int:
         # huggingface_hub / requests pick these up at request time.
         os.environ.setdefault("HTTPS_PROXY", args.proxy)
         os.environ.setdefault("HTTP_PROXY", args.proxy)
-        print(f"[env] 使用代理 {args.proxy}")
+        # Measured through a local proxy: the hf-xet transfer path stalled
+        # (a 2 GB layer moved 2.5 KB in ~55 min) while the classic
+        # requests-based path sustained megabytes per second, so route
+        # --proxy runs through the latter.  An explicit HF_HUB_DISABLE_XET=0
+        # still wins (setdefault only fills in an unset variable).
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        print(f"[env] 使用代理 {args.proxy}（hf-xet 关闭，走经典 requests 上传路径）")
 
     folder = resolve(args.remote_out)
     manifest_path = resolve(args.manifest)

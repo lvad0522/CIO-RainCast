@@ -144,29 +144,42 @@ function loadDemoData() {
   return { manifest, fixtures: manifest.testFixtures };
 }
 
-test('every manifest case ships the full heavy layer through the external host', () => {
+test('the default case ships in the repository layer, every other case through the external host', () => {
   const { manifest, fixtures } = loadDemoData();
   assert.equal(manifest.version, 2, 'manifest 版本不是 2');
   assert.ok(manifest.remoteBase, 'manifest 缺少 remoteBase');
   const cases = Object.entries(manifest.cases);
   assert.ok(cases.length > 0, 'manifest 里没有任何用例');
-  let heavy = 0;
+  const landing = manifest.defaultCase;
+  assert.ok(cases.some(([caseId]) => caseId === landing), `默认用例 ${landing} 不在 manifest 里`);
+  const heavyPaths = entry => [
+    entry.arrays.predict2, entry.arrays.real2, entry.arrays.pearsonR,
+    entry.frames.index, entry.frames.bundle, entry.input,
+  ];
   for (const [caseId, entry] of cases) {
     assert.ok(entry.full, `${caseId}: 不是完整层用例`);
-    const paths = [
-      entry.arrays.predict2, entry.arrays.real2, entry.arrays.pearsonR,
-      entry.frames.index, entry.frames.bundle, entry.input,
-    ];
-    for (const path of paths) {
-      assert.ok(path.startsWith(REMOTE_PREFIX), `${caseId}: ${path} 没有走外置层`);
+    const paths = heavyPaths(entry);
+    if (caseId === landing) {
+      // 访客打开的第一页必须自带全套数据：数据集宿主不可达时它仍要完整渲染。
+      for (const path of paths) {
+        assert.ok(!path.startsWith(REMOTE_PREFIX), `${landing}: ${path} 仍走外置层`);
+        assert.ok(existsSync(join(dataDir, path)), `${landing}: ${path} 不在仓库层`);
+      }
       assert.ok(
-        !existsSync(join(dataDir, path)),
-        `${caseId}: ${path} 不该出现在仓库层（体积会失控）`,
+        !String(manifest.shared.weights).startsWith(REMOTE_PREFIX)
+          && existsSync(join(dataDir, manifest.shared.weights)),
+        'shared.weights 必须随落地页进仓库层（每帧投影都要用）',
       );
+    } else {
+      for (const path of paths) {
+        assert.ok(path.startsWith(REMOTE_PREFIX), `${caseId}: ${path} 没有走外置层`);
+        assert.ok(
+          !existsSync(join(dataDir, path)),
+          `${caseId}: ${path} 不该出现在仓库层（体积会失控）`,
+        );
+      }
     }
-    heavy += 1;
   }
-  assert.equal(heavy, cases.length);
   assert.ok(fixtures?.parity && fixtures?.projection && fixtures?.arrays, '测试夹具不完整');
 });
 

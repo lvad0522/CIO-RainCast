@@ -10,6 +10,10 @@ and writes two destinations:
   JSON (run summary, CIO series/completeness/spectrum, model comparison,
   focus-region cards + CSV) plus the shared CIO reference.  Committed to the
   demo repository: the site must load with no backend and no external host.
+  The landing case (``--inline-cases``, default ``2000-pre20``) additionally
+  keeps its heavy payload here — including the projection weights every daily
+  frame needs — so the page a visitor opens first is complete even when the
+  dataset host is unreachable.
 * **remote layer** — ``--remote-out`` (default ``tmp/demo-data-remote/``):
   every heavy payload, meant for a public dataset host (Hugging Face).  The
   manifest records those paths with a ``remote:`` prefix and the site resolves
@@ -95,7 +99,7 @@ DEFAULT_REMOTE_OUT = ROOT / "tmp" / "demo-data-remote"
 # Baked into the manifest; edit here (or pass --remote-base) when the dataset
 # repository lives under another account.
 DEFAULT_REMOTE_BASE = (
-    "https://huggingface.co/datasets/lvad0522/CIO-RainCast-demo-data/resolve/main/"
+    "https://huggingface.co/datasets/Anthony1919826/CIO-RainCast-demo-data/resolve/main/"
 )
 ALL_YEARS = tuple(range(2000, 2020))
 ALL_LEADS = tuple(range(1, 21))
@@ -104,6 +108,11 @@ ARRAY_SHAPE = (81, 101, 112)      # dataset rainfall grids (lat, lon, steps)
 PROJ_SHAPE = (41, 81, 112)        # projection preview grids (lat, lon, steps)
 PROJ_STEPS = 112
 REMOTE_PREFIX = "remote:"
+# Cases whose heavy payload is copied into the repository layer instead of the
+# dataset host (the landing page must survive an unreachable external host).
+# ~10 MB for the default case, shared weights included; pass `--inline-cases ""`
+# to disable.
+DEFAULT_INLINE_CASES = ("2000-pre20",)
 # Legacy heavy paths from the first bake; removed from the repository layer
 # once the payloads live on the remote host.
 LEGACY_REPO_DIRS = ("cases/{case}/arrays", "cases/{case}/frames")
@@ -903,6 +912,81 @@ def bake_dataset_fixture(client, cases, repo: Writer) -> dict | None:
     }
 
 
+# ── landing-case inlining ───────────────────────────────────────────────────
+
+
+def inline_landing_cases(repo: Writer, remote_dir: Path, cases, manifest: dict) -> None:
+    """Copy a case's heavy payload into the repository layer.
+
+    The manifest entry drops the ``remote:`` prefix, so the browser loads those
+    files from the site itself (``resolveAssetUrl`` sends non-remote paths to
+    ``demo-data/``) — no frontend code is involved.  Files already inlined by a
+    previous bake are left alone, which keeps this pass idempotent.
+
+    The projection weights are shared by every case and every daily frame, so
+    they move to the repository layer too as soon as one case is inlined —
+    otherwise the landing page would still stall on the dataset host.
+    """
+    inlined_total = 0
+
+    def relocate(path: str, label: str) -> str:
+        nonlocal inlined_total
+        if not isinstance(path, str) or not path.startswith(REMOTE_PREFIX):
+            return path  # already in the repository layer
+        rel = path[len(REMOTE_PREFIX):]
+        source = remote_dir / rel
+        if not source.is_file():
+            raise SystemExit(
+                f"[inline] {label} 要内置的外置文件不存在：{source}\n"
+                "        （先跑完整烘焙，或 --inline-cases \"\" 关闭内置）"
+            )
+        gzipped = rel.endswith(".gz")
+        stored = repo.write_bytes(
+            rel[:-len(".gz")] if gzipped else rel,
+            read_maybe_gz(source),
+            force_gz=gzipped,
+        )
+        if stored != rel:  # the writer must reproduce the very same name
+            raise SystemExit(f"[inline] {label}: {stored} != {rel}")
+        inlined_total += 1
+        return stored
+
+    for case in cases:
+        entry = manifest["cases"].get(case)
+        if entry is None:
+            print(f"[inline] 跳过 {case}（不在本次烘焙范围内）")
+            continue
+        before = inlined_total
+        entry["arrays"] = {key: relocate(value, case) for key, value in (entry.get("arrays") or {}).items()}
+        entry["frames"] = {key: relocate(value, case) for key, value in (entry.get("frames") or {}).items()}
+        if entry.get("input"):
+            entry["input"] = relocate(entry["input"], case)
+        if inlined_total > before:
+            print(f"[inline] {case}：{inlined_total - before} 个重文件内置进仓库层（默认页不依赖外置宿主）")
+
+    # Any landing case that now lives entirely in the repository layer pulls the
+    # shared heavy files with it (asked of the manifest, not of this run, so a
+    # resumed bake repairs a half-inlined state too).
+    def is_local(entry: dict) -> bool:
+        paths = list((entry.get("arrays") or {}).values()) + list((entry.get("frames") or {}).values())
+        if entry.get("input"):
+            paths.append(entry["input"])
+        return bool(paths) and not any(
+            isinstance(path, str) and path.startswith(REMOTE_PREFIX) for path in paths
+        )
+
+    landing_local = any(
+        manifest["cases"].get(case) and is_local(manifest["cases"][case]) for case in cases
+    )
+    if landing_local:
+        shared = manifest.get("shared") or {}
+        before = inlined_total
+        for key, value in list(shared.items()):
+            shared[key] = relocate(value, f"shared.{key}")
+        if inlined_total > before:
+            print(f"[inline] shared 重文件 {inlined_total - before} 个（含投影权重）→ 仓库层")
+
+
 # ── integrity + reporting ───────────────────────────────────────────────────
 
 
@@ -925,12 +1009,21 @@ def verify_integrity(out_dir: Path, remote_dir: Path, manifest: dict) -> None:
                 missing.append(f"{case}: remote:{relpath}")
     if missing:
         raise SystemExit("[integrity] missing files:\n  " + "\n  ".join(missing[:20]))
+    # The sampled case may have been inlined into the repository layer, so
+    # resolve its frame files against whichever layer actually holds them.
     sample = next(iter(manifest["cases"].values()))
-    blob = read_maybe_gz(remote_dir / sample["frames"]["bundle"][len(REMOTE_PREFIX):])
+    frames_root = remote_dir
+    bundle_path, index_path = sample["frames"]["bundle"], sample["frames"]["index"]
+    if bundle_path.startswith(REMOTE_PREFIX):
+        bundle_path = bundle_path[len(REMOTE_PREFIX):]
+        index_path = index_path[len(REMOTE_PREFIX):]
+    else:
+        frames_root = out_dir
+    blob = read_maybe_gz(frames_root / bundle_path)
     processed, scalars = decode_frame_bundle(blob)
     if processed.shape != (PROJ_STEPS, *PROJ_SHAPE[:2]) or scalars.shape != (PROJ_STEPS, 5):
         raise SystemExit("[integrity] frame bundle shape mismatch")
-    index_doc = json.loads(read_maybe_gz(remote_dir / sample["frames"]["index"][len(REMOTE_PREFIX):]))
+    index_doc = json.loads(read_maybe_gz(frames_root / index_path))
     if len(index_doc["dates"]) != PROJ_STEPS:
         raise SystemExit("[integrity] frame index date count mismatch")
 
@@ -957,6 +1050,14 @@ def _iter_repo_paths(entry: dict):
                 yield from inner.values()
         else:
             yield value
+    # Heavy payloads inlined into the repository layer (landing case): arrays,
+    # frames and the input pool that do NOT carry the `remote:` prefix.
+    heavy = list((entry.get("arrays") or {}).values()) + list((entry.get("frames") or {}).values())
+    if entry.get("input"):
+        heavy.append(entry["input"])
+    for value in heavy:
+        if isinstance(value, str) and not value.startswith(REMOTE_PREFIX):
+            yield value
 
 
 def _iter_remote_paths(entry: dict):
@@ -968,6 +1069,13 @@ def _iter_remote_paths(entry: dict):
             yield value[len(REMOTE_PREFIX):]
     if str(entry.get("input", "")).startswith(REMOTE_PREFIX):
         yield entry["input"][len(REMOTE_PREFIX):]
+
+
+def fixture_paths_present(fixtures: dict, out_dir: Path) -> bool:
+    """True when every file a (reused) ``testFixtures`` block points at is on disk."""
+    paths = [fixtures.get(key) for key in ("parity", "projection")]
+    paths += list((fixtures.get("arrays") or {}).values())
+    return all(isinstance(path, str) and (out_dir / path).is_file() for path in paths)
 
 
 def size_report(writers) -> None:
@@ -998,6 +1106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-fixture", action="store_true", help="不写前端对拍夹具")
     parser.add_argument("--cleanup-legacy", action="store_true",
                         help="删除仓库层里第一期烘焙留下的重数据目录（arrays/ frames/）")
+    parser.add_argument("--inline-cases", default=",".join(DEFAULT_INLINE_CASES),
+                        help="把这些用例的重数据复制进仓库层（默认 2000-pre20；传空串关闭）")
     return parser.parse_args()
 
 
@@ -1098,8 +1208,17 @@ def main() -> int:
                     manifest["testFixtures"] = fixture
         else:
             manifest["cases"] = repo.cases
+            # A light-only run does not touch the fixtures the previous heavy
+            # bake wrote; keep pointing at them while those files are on disk.
+            fixtures = (previous or {}).get("testFixtures")
+            if fixtures and fixture_paths_present(fixtures, args.out):
+                manifest["testFixtures"] = fixtures
+                print(f"[light] 保留上一轮 testFixtures（{len(fixtures.get('arrays') or {})} 个数组）")
 
     manifest["cases"] = dict(sorted(manifest["cases"].items()))
+    inline_cases = [item.strip() for item in args.inline_cases.split(",") if item.strip()]
+    if inline_cases:
+        inline_landing_cases(repo, args.remote_out, inline_cases, manifest)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
