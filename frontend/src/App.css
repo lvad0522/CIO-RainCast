@@ -436,6 +436,26 @@
   min-width: 0;
 }
 .prediction-map-surface .heatmap-overlay { z-index: 2; }
+.prediction-canvas.rainfall-inspect-canvas { cursor: crosshair; }
+.rainfall-map-tooltip {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  width: 228px;
+  max-width: calc(100% - 16px);
+  padding: 7px 9px;
+  border: 1px solid #d5dfe4;
+  border-radius: 3px;
+  background: rgba(25, 31, 36, .94);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+.rainfall-map-tooltip span, .rainfall-map-tooltip strong { display: block; }
+.rainfall-map-tooltip span { color: #d5e1e7; font-size: 11px; }
+.rainfall-point-readout { margin-bottom: 12px; }
 .geo-overlay-key {
   display: flex;
   align-items: center;

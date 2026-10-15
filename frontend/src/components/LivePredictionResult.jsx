@@ -4,6 +4,7 @@ import {
 } from 'recharts';
 import { getHeatColor } from '../utils/heatColor';
 import { rainfallScaleMax } from '../utils/rainfallScale';
+import { rainfallGridPoint } from '../utils/rainfallPoint';
 import { isStaticMode, staticAssetUrl } from '../staticMode';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -204,6 +205,8 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
   const [pearson, setPearson] = useState(null);
   const [focusRegion, setFocusRegion] = useState(null);
   const [selectedPearsonGrid, setSelectedPearsonGrid] = useState(null);
+  const [selectedRainfallGrid, setSelectedRainfallGrid] = useState(null);
+  const [hoveredRainfallGrid, setHoveredRainfallGrid] = useState(null);
   const [geoData, setGeoData] = useState(null);
   const [error, setError] = useState(null);
   const [focusDownloadUrl, setFocusDownloadUrl] = useState(null);
@@ -217,6 +220,23 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
   const caseFrame = loadedFrame?.jobId === job.jobId && loadedFrame?.view === view
     ? loadedFrame : null;
   const frame = caseFrame?.timeIndex === timeIndex ? caseFrame : null;
+  const rainfallCaseKey = `${root}|${job.jobId}`;
+  const rainfallPoint = selectedRainfallGrid?.caseKey === rainfallCaseKey ? selectedRainfallGrid : null;
+  const hoverPoint = hoveredRainfallGrid?.caseKey === rainfallCaseKey && frame ? hoveredRainfallGrid : null;
+  const rainfallValueLabel = view === 'error' ? 'Error (P − O)' : VIEW_LABELS[view];
+  const pointValue = point => {
+    const value = frame?.data?.[point.i]?.[point.j];
+    return !frame ? 'Loading…' : Number.isFinite(value) ? `${value.toFixed(3)} mm/day` : 'No data';
+  };
+  const inspectRainfallPoint = (event, select = false) => {
+    if (!frame) return;
+    const point = rainfallGridPoint(event.clientX, event.clientY,
+      event.currentTarget.getBoundingClientRect(), frame.rows, frame.cols);
+    if (!point) return;
+    const next = { ...point, caseKey: rainfallCaseKey };
+    if (select) setSelectedRainfallGrid(next);
+    else setHoveredRainfallGrid(next);
+  };
   // Keep a known whole-window limit while the next date loads; never reuse
   // a scale from another case or view. Upload previews keep their daily fallback.
   const fixedScale = colorScale === 'window' || Number.isFinite(caseFrame?.scaleMax);
@@ -488,12 +508,23 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
               cols={frame?.cols || MAP_COLS}
               geoData={geoData}
               showContour={false}
+              selectedPoint={rainfallPoint}
             >
               <canvas
                 ref={canvasRef}
-                className="prediction-canvas"
-                title={view === 'error' ? 'Prediction − observation (mm/day)' : 'Rainfall anomaly (mm/day)'}
+                className="prediction-canvas rainfall-inspect-canvas"
+                aria-label="Rainfall anomaly map"
+                onMouseMove={event => inspectRainfallPoint(event)}
+                onMouseLeave={() => setHoveredRainfallGrid(null)}
+                onClick={event => inspectRainfallPoint(event, true)}
               />
+              {hoverPoint && <div className="rainfall-map-tooltip" role="tooltip" style={{
+                left: `clamp(8px, ${hoverPoint.x + 12}px, max(8px, calc(100% - 236px)))`,
+                top: `clamp(8px, ${hoverPoint.y + 12}px, max(8px, calc(100% - 70px)))`,
+              }}>
+                <span>{hoverPoint.lon.toFixed(2)}°E, {hoverPoint.lat.toFixed(2)}°N</span>
+                <strong>{rainfallValueLabel}: {pointValue(hoverPoint)}</strong>
+              </div>}
             </GeoHeatmapFrame>
             <div className="prediction-legend">
               <span>{view === 'error' ? `Underestimate −${ERROR_COLOR_LIMIT}` : `Negative anomaly ${colorScaleMax != null ? (-colorScaleMax).toFixed(2) : '—'}`}</span>
@@ -502,6 +533,12 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
               </div>
               <span>{view === 'error' ? `Overestimate +${ERROR_COLOR_LIMIT}` : `Positive anomaly ${colorScaleMax != null ? colorScaleMax.toFixed(2) : '—'}`} mm/day</span>
             </div>
+            {rainfallPoint && <div className="pearson-point-readout rainfall-point-readout" role="status" aria-label="Selected rainfall grid point">
+              <span>Selected grid point</span>
+              <strong>{rainfallPoint.lon.toFixed(2)}°E, {rainfallPoint.lat.toFixed(2)}°N</strong>
+              <span>{rainfallValueLabel}</span>
+              <strong>{pointValue(rainfallPoint)}</strong>
+            </div>}
             <label className="prediction-slider-label">
               Time step
               <input

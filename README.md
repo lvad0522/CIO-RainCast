@@ -126,7 +126,7 @@ The frontend development server proxies `/api` to port 8000. See [Deployment](do
 2. Move the projection-date slider to inspect U850 fields and their CIO contributions.
 3. Follow the projected series into the normalized input window.
 4. Inspect the skill map, select a grid point, and compare its predicted and observed time series.
-5. Switch between **Prediction**, **Observation**, and **Error** maps.
+5. Switch between **Prediction**, **Observation**, and **Error** maps. Hover for a grid value, or click to keep its coordinates and value visible while changing views and dates. Error is prediction minus observation; values are in mm/day.
 6. Beside **Spatial forecast skill**, select a region and the last day of the **1–N-day average** in **Model comparison across years**. Toggle series, export annual scores, and inspect the **Current selection** metrics for the forecast year and lead selected in the sidebar.
 
 Projection closure checks numerical reconstruction of the CIO index; it does not establish physical causality or forecast skill. The paired model comparison evaluates stored prediction methods, rather than isolating the causal benefit of CIO inputs. Metric definitions and implementation limits are documented in [Reproducibility](docs/reproducibility.md).
