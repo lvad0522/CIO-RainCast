@@ -16,12 +16,24 @@ The 112-day contribution summary averages the absolute daily grid contributions,
 
 The demonstration reads existing ASTGRN rainfall products. The corresponding training implementation and checkpoints are outside this repository. The retained optional online inference routes are for the legacy LSTM models.
 
-The skill map uses the selected stored correlation product. The LSTM–ASTGRN–STDN module recomputes correlations from forecast and observation arrays instead of selecting values from legacy correlation channels:
+The skill map uses the selected stored correlation product. The annual comparison uses the frozen per-case scores in `frontend/src/data/annualModelComparison.json`, computed from the forecast and observation arrays:
 
-- All three methods use stored run 1 and must have compatible observations.
-- A grid-point Pearson correlation uses finite time samples shared by all three methods. The regional summary averages the grid points where all three correlations are defined.
-- RMSE and MAE pool common finite grid-point/time pairs across all three methods in the selected region.
-- Across-year correlation curves give each available paired year equal weight.
+- The data cover 2000–2019 and pre1–pre20: 400 cases for each region, using stored run 1.
+- The other-year reference averages the processed observations from the other 19 years at each grid point and retained target position, excluding the evaluation year. It is an observation reference for retrospective comparison.
+- Each case uses the same grid points for all four methods. Observations, all three model predictions, and the reference must be finite and have nonzero variance across the complete 112-sample sequence at those points.
+- A single-configuration view shows that configuration's mean grid-point temporal Pearson correlation for each year. An averaging range gives equal weight to its configuration-specific scores within each year; it does not average prediction fields before calculating correlation.
+- The default pre1–pre7 average reproduces the approved annual comparison figure. Selecting pre1–pre20 or a different range uses the corresponding stored scores.
+- East Asia and the focus region have separate labeled axis ranges, each fixed across configuration changes. Legend visibility changes the plotted series; CSV exports retain all four methods for the selected configuration range.
+
+These small statistics are bundled with the frontend, so the annual comparison works in both API-connected and static builds without downloading the large forecast arrays. The existing `/api/model-comparison` endpoint remains available for per-case three-model metrics; it uses its original shared-finite-sample definition and is separate from these annual panels.
+
+To rebuild the bundled statistics from the three dataset trees described in [Data setup](data-setup.md), run from the repository root:
+
+```bash
+python scripts/build_annual_comparison.py --data-root /path/to/research-data
+```
+
+The builder checks observation consistency across models and configurations and records source hashes. Use `--source-products` for an explicit product registry and `--original-regression-file` to verify the pre1–pre7 results against the frozen figure data.
 
 The training setups differ. This is a comparison of prediction methods sharing the CIO signal, not a controlled architecture ablation or an experiment isolating the contribution of CIO. The S2S panel is also not a CIO-input ablation.
 

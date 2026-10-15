@@ -25,6 +25,9 @@ Dataset/
 Dataset-AGCRN/
 Dataset-STDN/
 data/
+!frontend/src/data/
+frontend/src/data/*
+!frontend/src/data/annualModelComparison.json
 model/
 models/
 backend/uploads/

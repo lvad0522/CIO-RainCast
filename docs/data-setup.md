@@ -4,7 +4,7 @@ The repository contains code and local geographic assets. Forecast arrays, meteo
 
 ## 1. Historical rainfall products
 
-Place the ASTGRN products in `Dataset-AGCRN/`. The three-model comparison also requires LSTM products in `Dataset/` and STDN products in `Dataset-STDN/` at the repository root:
+Place the ASTGRN products in `Dataset-AGCRN/`. Rebuilding the annual comparison statistics or using the per-case comparison API also requires LSTM products in `Dataset/` and STDN products in `Dataset-STDN/` at the repository root. The displayed annual chart already includes its statistics with the frontend.
 
 ```text
 Dataset-AGCRN/pre1/2001/
@@ -30,7 +30,7 @@ Dataset-STDN/pre1/2001/
 
 Repeat the layout for `pre1`–`pre20` and 2000–2019. The default application selects stored run 1. The original filenames and the `Dataset-AGCRN` directory name are preserved for compatibility. The loader also recognizes the historical LSTM `pre7-new` directory and legacy prediction filenames.
 
-`DATA_ROOT` can select another historical tree. When changing it, also set `DATA_FAMILY` to the corresponding display name. Use absolute paths when starting from different working directories. The three-model comparison module reads the three named root directories independently of `DATA_ROOT`.
+`DATA_ROOT` can select another historical tree. When changing it, also set `DATA_FAMILY` to the corresponding display name. Use absolute paths when starting from different working directories. The per-case comparison API reads the three named root directories independently of `DATA_ROOT`.
 
 ## 2. Projection constants and U850 inputs
 
@@ -64,7 +64,7 @@ The default endpoint restores completed caches; missing or inconsistent caches r
 
 The 2003 S2S panel reads `corr-2003.nc` and `corr-avg-2003.nc` from the root directory `新绘图资料/`. Their `corr` variables have shapes `(11, 20)` and `(20,)`. They are separate research assets, excluded by the NetCDF ignore rules.
 
-The legacy S2S endpoint can return a generated fallback with `source: "mock"` when these assets are missing. Only `source: "dataset"` represents the research comparison. This fallback is distinct from the LSTM–ASTGRN–STDN module, which reports unavailable cases instead of substituting values.
+The legacy S2S endpoint can return a generated fallback with `source: "mock"` when these assets are missing. Only `source: "dataset"` represents the research comparison. The separate per-case LSTM–ASTGRN–STDN API reports unavailable cases instead of substituting values; the displayed annual chart uses its bundled statistics.
 
 ## 4. Optional online LSTM inference
 
