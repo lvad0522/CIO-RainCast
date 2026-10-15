@@ -620,7 +620,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
 //   }, [data.spectrum]);
   const calendarKnown = Boolean(data.series?.calendarKnown);
   const lineLabel = job.projectionMode === 'u850_only'
-    ? 'U850-only projection'
+    ? 'U850 projection'
     : 'Projected CIO';
   // `.npy` 入口：① 真的没跑过，写清楚而不是留一片看着像"跑了但空"的字段
   const stage1Skipped = Boolean(projection.stage1Skipped);
@@ -628,7 +628,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
     ['Source', 'Global U850 anomalies · system dataset'],
     ['CIO input domain', 'Central Indian Ocean · 20°S–20°N, 40°E–120°E'],
     ['Rainfall target', 'East Asia · 20–40°N, 100–125°E'],
-    ['Projection', 'U850-only · EOF1'],
+    ['Projection', 'U850 · EOF1'],
     ['Target year', projection.year],
     ['Lead time', `${projection.lead} days`],
     ['Samples', normalization.inputLength],
@@ -644,7 +644,7 @@ export default function CioProjectionResult({ job, apiBase = API_BASE }) {
             <h3 className="result-title" style={{ margin: 0 }}>CIO dataset overview</h3>
             <></>
           </div>
-          <span className="region-badge">{job.projectionMode === 'u850_only' ? 'U850-only' : 'Series diagnostics'}</span>
+          <span className="region-badge">{job.projectionMode === 'u850_only' ? 'U850' : 'Series diagnostics'}</span>
         </div>
         {stage1Skipped && (
           <p className="chain-stage-skip">
