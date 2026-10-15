@@ -16,6 +16,8 @@ import './App.css';
 
 const API_BASE = import.meta.env.VITE_DATA_API_BASE || import.meta.env.VITE_API_BASE || '';
 const defaults = initialCase(window.location.search);
+// 2026-10-15 按 PM 要求：初始「Selected grid · rainfall time series」取 113.25°E, 25.25°N（行 21 / 列 53）。
+const DEFAULT_GRID = { i: 21, j: 53 };
 // 2026-10-15 按 PM 要求：区域时序卡沿用与 reference EOF1 卡同款的开关，暂时隐藏；恢复时置 true。
 const SHOW_REGIONAL_MODEL_COMPARISON = false;
 
@@ -34,7 +36,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [selectedFold, setSelectedFold] = useState(null);
   const [comparisonRegion, setComparisonRegion] = useState(() => initialComparisonRegion(window.location.search));
-  const [grid, setGrid] = useState({ i: 40, j: 50 });
+  const [grid, setGrid] = useState(DEFAULT_GRID);
   // 静态演示站：当前组合是否带逐日场与格点序列（普通构建恒为 null，不参与判断）。
   const [caseInfo, setCaseInfo] = useState(null);
   const requests = useRef(null);
@@ -51,18 +53,30 @@ export default function App() {
     setJob(null);
     setCaseInfo(null);
     const query = new URLSearchParams({ year: selection.predYear, lead: selection.leadTime });
+    // /api/run 自带的时序是后端默认格点（40,50）的；按 PM 要求初始图落在 DEFAULT_GRID，
+    // 与该请求并发读取格点序列，读不到时回退到 /api/run 里那份。
+    const gridQuery = new URLSearchParams({
+      i: DEFAULT_GRID.i, j: DEFAULT_GRID.j, region: 'eastasia',
+      year: selection.predYear, lead: selection.leadTime,
+    });
     const settled = await Promise.allSettled([
       read(`/api/run?${query}&region=eastasia`, controller.signal),
       read(`/api/default-cio?${query}`, controller.signal),
       staticCaseInfo(selection.predYear, selection.leadTime),
+      read(`/api/grid?${gridQuery}`, controller.signal),
     ]);
     if (controller.signal.aborted) return;
-    const [rain, cio, info] = settled;
+    const [rain, cio, info, gridSeries] = settled;
     if (info.status === 'fulfilled') setCaseInfo(info.value);
     if (rain.status === 'fulfilled') {
-      setResults({ ...rain.value, year: selection.predYear, lead: selection.leadTime });
+      setResults({
+        ...rain.value,
+        year: selection.predYear,
+        lead: selection.leadTime,
+        ...(gridSeries.status === 'fulfilled' ? { timeSeries: gridSeries.value } : {}),
+      });
       setSelectedFold(rain.value.table?.[0]?.experiment);
-      setGrid({ i: 40, j: 50 });
+      setGrid(DEFAULT_GRID);
     }
     if (cio.status === 'fulfilled') setJob(cio.value);
     const failures = settled.filter(item => item.status === 'rejected').map(item => item.reason.message);
