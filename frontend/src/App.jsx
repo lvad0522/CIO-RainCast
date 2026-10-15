@@ -16,6 +16,8 @@ import './App.css';
 
 const API_BASE = import.meta.env.VITE_DATA_API_BASE || import.meta.env.VITE_API_BASE || '';
 const defaults = initialCase(window.location.search);
+// 2026-10-15 按 PM 要求：区域时序卡沿用与 reference EOF1 卡同款的开关，暂时隐藏；恢复时置 true。
+const SHOW_REGIONAL_MODEL_COMPARISON = false;
 
 async function read(path, signal) {
   const response = await fetch(`${API_BASE}${path}`, { signal });
@@ -149,8 +151,8 @@ export default function App() {
           </div>
         </div>
         <TimeSeriesChart data={results.timeSeries} gridLabel={`${(100 + grid.j * .25).toFixed(2)}°E, ${(20 + grid.i * .25).toFixed(2)}°N`} />
-        <RegionalModelComparison year={results.year} lead={results.lead} apiBase={API_BASE}
-          selectedRegion={comparisonRegion} onRegionChange={setComparisonRegion} />
+        {SHOW_REGIONAL_MODEL_COMPARISON && <RegionalModelComparison year={results.year} lead={results.lead} apiBase={API_BASE}
+          selectedRegion={comparisonRegion} onRegionChange={setComparisonRegion} />}
         {!dailyAvailable && <p className="static-demo-note" role="status">
           Day-by-day fields and grid-point time series are missing from this static demo dataset, so clicking the skill map is disabled here.
         </p>}
