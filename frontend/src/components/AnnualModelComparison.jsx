@@ -6,19 +6,19 @@ import {
 import comparisonData from '../data/annualModelComparison.json';
 import CurrentModelMetrics from './CurrentModelMetrics';
 import {
-  METHODS, aggregateAnnualComparison, buildAnnualComparisonCsv,
+  aggregateAnnualComparison, buildAnnualComparisonCsv,
 } from '../utils/annualComparison';
 
 const STYLES = {
   LSTM: { color: '#D17B27', marker: 'square', label: 'LSTM' },
   ASTGRN: { color: '#2463A0', marker: 'circle', label: 'ASTGRN' },
   STDN: { color: '#438565', marker: 'triangle', label: 'STDN' },
-  reference: { color: '#636363', marker: 'diamond', label: 'Other-year mean', dash: '6 4' },
 };
+const MODELS = Object.keys(STYLES);
 
 // Keep each region's scale fixed while changing configurations or hiding a series.
 const AXES = Object.fromEntries(comparisonData.regions.map(region => {
-  const values = region.points.flatMap(point => METHODS.map(method => point[method]));
+  const values = region.points.flatMap(point => MODELS.map(method => point[method]));
   const step = region.id === 'eastasia' ? .1 : .2;
   const lower = Math.max(-1, Math.floor((Math.min(...values) - .01) / step) * step);
   const upper = Math.min(1, Math.ceil((Math.max(...values) + .01) / step) * step);
@@ -33,7 +33,6 @@ function Marker({ cx, cy, method, size = 2.8 }) {
   const common = { fill: color, stroke: color, strokeWidth: 1 };
   if (marker === 'square') return <rect x={cx - size} y={cy - size} width={size * 2} height={size * 2} {...common} />;
   if (marker === 'triangle') return <path d={`M ${cx} ${cy - size - 1} L ${cx + size + 1} ${cy + size} L ${cx - size - 1} ${cy + size} Z`} {...common} />;
-  if (marker === 'diamond') return <path d={`M ${cx} ${cy - size - 1} L ${cx + size + 1} ${cy} L ${cx} ${cy + size + 1} L ${cx - size - 1} ${cy} Z`} {...common} fill="#fff" />;
   return <circle cx={cx} cy={cy} r={size} {...common} />;
 }
 
@@ -59,7 +58,7 @@ export default function AnnualModelComparison({ year, lead, apiBase = '', select
   const toggle = method => setHidden(current => current.includes(method)
     ? current.filter(item => item !== method) : [...current, method]);
 
-  return <section className="result-card cio-comparison annual-comparison" aria-label="Annual model comparison with other-year reference">
+  return <section className="result-card cio-comparison annual-comparison" aria-label="Annual model comparison">
     <div className="result-header cio-comparison-header">
       <h3 className="result-title">Annual model comparison</h3>
       <button type="button" className="export-btn" onClick={() => exportComparison(end, selectedRegion)}>Export CSV</button>
@@ -80,10 +79,10 @@ export default function AnnualModelComparison({ year, lead, apiBase = '', select
     <div className="annual-comparison-summary">
       <span aria-live="polite">{label} · 2000–2019</span>
       <div className="annual-comparison-legend" aria-label="Annual comparison series">
-        {METHODS.map(method => <button type="button" key={method} aria-pressed={!hidden.includes(method)}
+        {MODELS.map(method => <button type="button" key={method} aria-pressed={!hidden.includes(method)}
           aria-label={`${STYLES[method].label} series`} onClick={() => toggle(method)}
           className={hidden.includes(method) ? 'is-hidden' : ''} style={{ color: STYLES[method].color }}
-          title={method === 'reference' ? comparisonData.referenceDefinition : `Toggle ${STYLES[method].label}`}>
+          title={`Toggle ${STYLES[method].label}`}>
           <svg width="28" height="12" viewBox="0 0 28 12" aria-hidden="true">
             <line x1="1" y1="6" x2="27" y2="6" stroke="currentColor" strokeWidth="2" strokeDasharray={STYLES[method].dash} />
             <Marker cx={14} cy={6} method={method} size={2.3} />
@@ -110,7 +109,7 @@ export default function AnnualModelComparison({ year, lead, apiBase = '', select
               labelFormatter={year => `Evaluation year: ${year}`}
               cursor={{ stroke: '#9cb7c3', strokeDasharray: '3 3' }} />
             <ReferenceLine y={0} stroke="#929da4" />
-            {METHODS.map(method => <Line key={method} dataKey={method} name={STYLES[method].label} type="linear"
+            {MODELS.map(method => <Line key={method} dataKey={method} name={STYLES[method].label} type="linear"
               hide={hidden.includes(method)} stroke={STYLES[method].color} strokeWidth={method === 'ASTGRN' ? 2.5 : 2}
               strokeDasharray={STYLES[method].dash} strokeLinecap="round"
               dot={<Marker method={method} />} activeDot={<Marker method={method} size={4} />}
@@ -119,7 +118,6 @@ export default function AnnualModelComparison({ year, lead, apiBase = '', select
         </ResponsiveContainer>
       </div>
     </div>
-    <p className="annual-comparison-note">Other-year mean: same-position observations from the other 19 years.</p>
     <p className="annual-comparison-coverage">{comparisonData.years.length * end} cases · Common valid correlation points</p>
     <CurrentModelMetrics year={year} lead={lead} region={selectedRegion} apiBase={apiBase} />
   </section>;
