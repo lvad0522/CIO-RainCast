@@ -639,7 +639,7 @@
   min-width: 0;
 }
 
-/* Spatial skill and the S2S reference share the overview row. */
+/* Spatial skill and the interactive model comparison share the overview row. */
 .overview-row { align-items: stretch; margin-bottom: 18px; }
 .overview-row > .result-col { display: flex; flex-direction: column; gap: 18px; }
 .overview-row > .result-col > .result-card { margin-bottom: 0; }
@@ -1544,35 +1544,35 @@ input, button, select { font: inherit; }
 .cio-comparison-header .result-title { margin: 0; }
 .cio-comparison-header .export-btn { flex: 0 0 auto; }
 .annual-comparison-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px 16px; margin-bottom: 18px; }
-.annual-comparison-controls > label { display: flex; flex-direction: column; gap: 5px; min-width: 100px; color: #617783; font-size: 12px; }
-.annual-comparison-controls > label:first-child { min-width: 200px; }
+.annual-comparison-controls > label { display: flex; flex: 1; flex-direction: column; gap: 5px; min-width: 130px; color: #617783; font-size: 12px; }
 .annual-comparison-controls select { padding: 7px 9px; border: 1px solid #cadce3; border-radius: 5px; background: #f8fbfc; color: #244655; font-size: 12px; }
 .annual-comparison-controls select:focus-visible, .annual-comparison input:focus-visible,
 .annual-comparison-legend button:focus-visible, .annual-comparison .export-btn:focus-visible { outline: 2px solid #47838b; outline-offset: 3px; }
-.annual-comparison-slider { flex: 1; max-width: 420px; min-width: 200px; color: #617783; font-size: 12px; }
-.annual-comparison-slider label { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 5px; }
-.annual-comparison-slider output { color: #24566a; font-weight: 600; }
-.annual-comparison-slider input { display: block; width: 100%; margin: 0; accent-color: #2463a0; cursor: pointer; }
-.annual-comparison-endpoints { display: flex; justify-content: space-between; margin-top: 3px; font-size: 10px; }
 .annual-comparison-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; margin-bottom: 18px; color: #45626f; font-size: 12px; }
 .annual-comparison-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; }
 .annual-comparison-legend button { display: inline-flex; align-items: center; gap: 6px; border: 0; padding: 3px 0; background: transparent; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .annual-comparison-legend button.is-hidden { opacity: .4; text-decoration: line-through; }
 .annual-comparison-legend svg { display: block; flex-shrink: 0; }
 .annual-comparison-panel h4 { margin: 0 0 6px; color: #345b6b; font-size: 14px; font-weight: 600; }
-.annual-comparison-panel + .annual-comparison-panel { margin-top: 18px; }
 .cio-comparison-chart { min-width: 0; width: 100%; }
 .annual-comparison-note { margin: 16px 0 4px; color: #617783; font-size: 11px; line-height: 1.5; }
 .annual-comparison-coverage { margin: 0; color: #758894; font-size: 10px; line-height: 1.5; }
+.current-model-metrics { border-top: 1px solid #e1e9ed; margin-top: 18px; padding-top: 16px; }
+.current-model-metrics-heading { margin: 0 0 5px; color: #345b6b; font-size: 13px; font-weight: 600; }
+.current-model-metrics-summary, .current-model-metrics-status { margin: 0 0 12px; color: #617783; font-size: 11px; line-height: 1.5; }
+.current-model-metrics-table-wrap { overflow-x: auto; }
+.current-model-metrics-table { width: 100%; min-width: 315px; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.current-model-metrics-table th, .current-model-metrics-table td { padding: 9px 8px; text-align: right; border-bottom: 1px solid #e8eef1; white-space: nowrap; }
+.current-model-metrics-table th:first-child { text-align: left; }
+.current-model-metrics-table thead th { background: #f3f7f9; color: #526b78; font-size: 11px; font-weight: 500; }
+.current-model-metrics-table small { display: block; margin-top: 2px; color: #758894; font-size: 10px; }
+.current-model-metrics-table tbody td { color: #244655; }
+.current-model-metrics-table tbody tr:last-child > * { border-bottom: 0; }
 .rainfall-scale-controls { margin: 0 0 14px; }
 .rainfall-scale-label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: #526874; font-size: 12px; }
 .rainfall-scale-label select { padding: 6px 9px; border: 1px solid #cadce3; border-radius: 5px; color: #244655; background: #f8fbfc; font-size: 12px; }
 .rainfall-scale-label select:focus-visible { outline: 2px solid #47838b; outline-offset: 2px; }
 .rainfall-scale-controls .rainfall-scale-note { margin: 7px 0 0; font-size: 11px; line-height: 1.5; }
-@container workspace (max-width: 600px) {
-  .annual-comparison-controls > label:first-child { flex-basis: 100%; }
-  .annual-comparison-slider { flex-basis: 100%; max-width: none; }
-}
 
 /* 静态演示站：本组合未烘焙逐日数据时的替代提示（普通构建不出现） */
 .static-demo-note {

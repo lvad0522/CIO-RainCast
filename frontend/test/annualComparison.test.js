@@ -141,6 +141,20 @@ test('CSV rejects missing provenance rather than exporting an undefined label', 
   }
 });
 
+test('region-selected CSV contains the displayed region and its full-precision annual scores', () => {
+  const data = fixture();
+  for (const selected of ['focus', 'eastasia']) {
+    const csv = buildAnnualComparisonCsv(data, 1, 2, selected);
+    const expected = aggregateAnnualComparison(data, 1, 2).find(region => region.id === selected);
+    assert.ok(csv.includes(`Region scope,${expected.label}\r\n`));
+    const lines = csv.split('\r\n').filter(line => /^(focus|eastasia),/.test(line));
+    assert.deepEqual(lines, expected.points.map(point => [
+      selected, point.year, 2, ...METHODS.map(method => point[method]),
+    ].join(',')));
+  }
+  assert.throws(() => buildAnnualComparisonCsv(data, 1, 2, 'unknown'), /Unknown comparison region/);
+});
+
 test('bundled annual data covers all 400 cases per region and the full pre1–pre20 range', () => {
   const data = JSON.parse(readFileSync(new URL('../src/data/annualModelComparison.json', import.meta.url), 'utf8'));
   assert.deepEqual(data.years, Array.from({ length: 20 }, (_, index) => 2000 + index));

@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import ParamPanel from './components/ParamPanel';
 import SkillMap from './components/SkillMap';
 import TimeSeriesChart from './components/TimeSeriesChart';
-import ModelCompareChart from './components/ModelCompareChart';
+// import ModelCompareChart from './components/ModelCompareChart';
 import DatasetEvaluation from './components/DatasetEvaluation';
 import CioModelComparison from './components/CioModelComparison';
 import CioProjectionResult from './components/CioProjectionResult';
@@ -139,10 +139,10 @@ export default function App() {
         <div className="result-row overview-row">
           <div className="result-col"><SkillMap key={`${results.year}-${results.lead}`} data={results.skillMap} region="eastasia" onGridClick={dailyAvailable ? handleGridClick : undefined} /></div>
           <div className="result-col">
-            <ModelCompareChart data={results.s2s} />
+            {/* <ModelCompareChart data={results.s2s} /> */}
+            <CioModelComparison year={results.year} lead={results.lead} apiBase={API_BASE} />
           </div>
         </div>
-        <CioModelComparison />
         <TimeSeriesChart data={results.timeSeries} gridLabel={`${(100 + grid.j * .25).toFixed(2)}°E, ${(20 + grid.i * .25).toFixed(2)}°N`} />
         {!dailyAvailable && <p className="static-demo-note" role="status">
           Day-by-day fields and grid-point time series are missing from this static demo dataset, so clicking the skill map is disabled here.

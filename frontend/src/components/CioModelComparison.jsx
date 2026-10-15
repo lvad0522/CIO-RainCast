@@ -4,8 +4,9 @@ import {
   Tooltip, XAxis, YAxis,
 } from 'recharts';
 import comparisonData from '../data/annualModelComparison.json';
+import CurrentModelMetrics from './CurrentModelMetrics';
 import {
-  METHODS, aggregateAnnualComparison, buildAnnualComparisonCsv, getConfigurationLabel,
+  METHODS, aggregateAnnualComparison, buildAnnualComparisonCsv,
 } from '../utils/annualComparison';
 
 const STYLES = {
@@ -36,66 +37,46 @@ function Marker({ cx, cy, method, size = 2.8 }) {
   return <circle cx={cx} cy={cy} r={size} {...common} />;
 }
 
-function exportComparison(start, end) {
-  const csv = buildAnnualComparisonCsv(comparisonData, start, end);
+function exportComparison(end, region) {
+  const csv = buildAnnualComparisonCsv(comparisonData, 1, end, region);
   const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `annual_model_comparison_2000-2019_pre${start}${start === end ? '' : `-pre${end}`}.csv`;
+  anchor.download = `annual_model_comparison_${region}_2000-2019_pre1${end === 1 ? '' : `-pre${end}`}.csv`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export default function CioModelComparison() {
-  const [mode, setMode] = useState('range');
-  const [singlePre, setSinglePre] = useState(7);
-  const [range, setRange] = useState({ start: 1, end: 7 });
+export default function CioModelComparison({ year, lead, apiBase = '' }) {
+  const [selectedRegion, setSelectedRegion] = useState('focus');
+  const [end, setEnd] = useState(7);
   const [hidden, setHidden] = useState([]);
-  const start = mode === 'single' ? singlePre : range.start;
-  const end = mode === 'single' ? singlePre : range.end;
-  const regions = useMemo(() => aggregateAnnualComparison(comparisonData, start, end), [start, end]);
-  const label = getConfigurationLabel(start, end);
+  const regions = useMemo(() => aggregateAnnualComparison(comparisonData, 1, end), [end]);
+  const region = regions.find(item => item.id === selectedRegion);
+  const label = end === 1 ? '1-day lead' : `1–${end}-day mean`;
   const toggle = method => setHidden(current => current.includes(method)
     ? current.filter(item => item !== method) : [...current, method]);
 
   return <section className="result-card cio-comparison annual-comparison" aria-label="Model comparison across years">
     <div className="result-header cio-comparison-header">
       <h3 className="result-title">Model comparison across years</h3>
-      <button type="button" className="export-btn" onClick={() => exportComparison(start, end)}>Export CSV</button>
+      <button type="button" className="export-btn" onClick={() => exportComparison(end, selectedRegion)}>Export CSV</button>
     </div>
     <div className="annual-comparison-controls">
-      <label>View
-        <select aria-label="Comparison configuration mode" value={mode} onChange={event => setMode(event.target.value)}>
-          <option value="range">Configuration average</option>
-          <option value="single">Single configuration</option>
+      <label>Region
+        <select aria-label="Comparison region" value={selectedRegion} onChange={event => setSelectedRegion(event.target.value)}>
+          <option value="focus">Focus region</option>
+          <option value="eastasia">East Asia</option>
         </select>
       </label>
-      {mode === 'range' ? <>
-        <label>From
-          <select aria-label="First comparison configuration" value={range.start} onChange={event => {
-            const value = Number(event.target.value);
-            setRange(current => ({ start: value, end: Math.max(value, current.end) }));
-          }}>
-            {comparisonData.configurations.map(pre => <option key={pre} value={pre}>pre{pre}</option>)}
-          </select>
-        </label>
-        <label>To
-          <select aria-label="Last comparison configuration" value={range.end} onChange={event => {
-            const value = Number(event.target.value);
-            setRange(current => ({ start: Math.min(value, current.start), end: value }));
-          }}>
-            {comparisonData.configurations.map(pre => <option key={pre} value={pre}>pre{pre}</option>)}
-          </select>
-        </label>
-      </> : <div className="annual-comparison-slider">
-        <label htmlFor="annual-comparison-pre">Input configuration <output htmlFor="annual-comparison-pre">pre{singlePre}</output></label>
-        <input id="annual-comparison-pre" type="range" min="1" max="20" step="1" value={singlePre}
-          aria-label="Comparison input configuration" onChange={event => setSinglePre(Number(event.target.value))} />
-        <div className="annual-comparison-endpoints"><span>pre1</span><span>pre20</span></div>
-      </div>}
+      <label>Lead-time average
+        <select aria-label="Comparison lead-time window" value={end} onChange={event => setEnd(Number(event.target.value))}>
+          {comparisonData.configurations.map(pre => <option key={pre} value={pre}>{pre === 1 ? '1 day' : `1–${pre} days`}</option>)}
+        </select>
+      </label>
     </div>
     <div className="annual-comparison-summary">
       <span aria-live="polite">{label} · 2000–2019</span>
@@ -112,18 +93,18 @@ export default function CioModelComparison() {
         </button>)}
       </div>
     </div>
-    {regions.map((region, index) => <div className="annual-comparison-panel" key={region.id}>
-      <h4>({index === 0 ? 'a' : 'b'}) {region.label}</h4>
+    <div className="annual-comparison-panel">
+      <h4>{region.label}</h4>
       <div className="cio-comparison-chart" role="img"
         aria-label={`Annual mean grid-point Pearson r, ${region.label}, ${label}, 2000–2019`}>
-        <ResponsiveContainer width="100%" height={210}>
-          <LineChart data={region.points} syncId="annual-model-comparison" syncMethod="value"
-            margin={{ top: 10, right: 20, bottom: index === 1 ? 23 : 5, left: 0 }}>
+        <ResponsiveContainer width="100%" height={245}>
+          <LineChart data={region.points}
+            margin={{ top: 10, right: 10, bottom: 23, left: 0 }}>
             <CartesianGrid vertical={false} stroke="#e1e9ed" />
             <XAxis dataKey="year" type="number" domain={[1999.6, 2019.4]} ticks={[2000, 2005, 2010, 2015, 2019]}
               allowDecimals={false} fontSize={11} tickMargin={7}
-              label={index === 1 ? { value: 'Evaluation year', position: 'insideBottom', offset: -14, fontSize: 11 } : undefined} />
-            <YAxis domain={AXES[region.id].domain} ticks={AXES[region.id].ticks} width={78} fontSize={11} tickMargin={8}
+              label={{ value: 'Evaluation year', position: 'insideBottom', offset: -14, fontSize: 11 }} />
+            <YAxis domain={AXES[region.id].domain} ticks={AXES[region.id].ticks} width={64} fontSize={11} tickMargin={8}
               tickFormatter={value => Number(value.toFixed(2))}
               label={{ value: 'Mean grid-point r', angle: -90, position: 'insideLeft', offset: 9, fontSize: 11, textAnchor: 'middle' }} />
             <Tooltip formatter={value => Number.isFinite(value) ? value.toFixed(4) : '—'}
@@ -138,8 +119,9 @@ export default function CioModelComparison() {
           </LineChart>
         </ResponsiveContainer>
       </div>
-    </div>)}
+    </div>
     <p className="annual-comparison-note">Other-year mean: same-position observations from the other 19 years.</p>
-    <p className="annual-comparison-coverage">{comparisonData.years.length * (end - start + 1)} cases per region · Common valid correlation points</p>
+    <p className="annual-comparison-coverage">{comparisonData.years.length * end} cases · Common valid correlation points</p>
+    <CurrentModelMetrics year={year} lead={lead} region={selectedRegion} apiBase={apiBase} />
   </section>;
 }

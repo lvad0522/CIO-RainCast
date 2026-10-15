@@ -21,11 +21,11 @@ The skill map uses the selected stored correlation product. The annual compariso
 - The data cover 2000–2019 and pre1–pre20: 400 cases for each region, using stored run 1.
 - The other-year reference averages the processed observations from the other 19 years at each grid point and retained target position, excluding the evaluation year. It is an observation reference for retrospective comparison.
 - Each case uses the same grid points for all four methods. Observations, all three model predictions, and the reference must be finite and have nonzero variance across the complete 112-sample sequence at those points.
-- A single-configuration view shows that configuration's mean grid-point temporal Pearson correlation for each year. An averaging range gives equal weight to its configuration-specific scores within each year; it does not average prediction fields before calculating correlation.
-- The default pre1–pre7 average reproduces the approved annual comparison figure. Selecting pre1–pre20 or a different range uses the corresponding stored scores.
-- East Asia and the focus region have separate labeled axis ranges, each fixed across configuration changes. Legend visibility changes the plotted series; CSV exports retain all four methods for the selected configuration range.
+- The chart averages configuration-specific mean grid-point temporal Pearson correlations from pre1 through preN, giving each configuration equal weight within each year. It does not average prediction fields before calculating correlation. The upper limit N can be selected from 1 to 20.
+- The default pre1–pre7 average reproduces the approved annual comparison figure. The initial region is the focus region; the selector also offers East Asia.
+- East Asia and the focus region have separate labeled axis ranges, each fixed across configuration changes. Legend visibility changes the plotted series; CSV exports retain all four methods for the selected region and lead-time window.
 
-These small statistics are bundled with the frontend, so the annual comparison works in both API-connected and static builds without downloading the large forecast arrays. The existing `/api/model-comparison` endpoint remains available for per-case three-model metrics; it uses its original shared-finite-sample definition and is separate from these annual panels.
+These small statistics are bundled with the frontend, so the annual curve needs no large forecast-array downloads. The **Current selection** table reads `/api/model-comparison` for the sidebar's selected year and lead and the comparison panel's region. It uses the existing three-model shared-finite-sample definition for mean grid-point r, pooled RMSE, and pooled MAE, independently of the annual curve's averaging window. Static builds read the corresponding baked response. A loading or unavailable state is shown while that response is pending or missing.
 
 To rebuild the bundled statistics from the three dataset trees described in [Data setup](data-setup.md), run from the repository root:
 
@@ -35,7 +35,7 @@ python scripts/build_annual_comparison.py --data-root /path/to/research-data
 
 The builder checks observation consistency across models and configurations and records source hashes. Use `--source-products` for an explicit product registry and `--original-regression-file` to verify the pre1–pre7 results against the frozen figure data.
 
-The training setups differ. This is a comparison of prediction methods sharing the CIO signal, not a controlled architecture ablation or an experiment isolating the contribution of CIO. The S2S panel is also not a CIO-input ablation.
+The training setups differ. This is a comparison of prediction methods sharing the CIO signal, not a controlled architecture ablation or an experiment isolating the contribution of CIO. The S2S panel is currently commented out; its retained data and implementation are not a CIO-input ablation.
 
 Focus-region area-mean time-series metrics and mean grid-point correlations are different statistics. The UI reports both with separate labels.
 

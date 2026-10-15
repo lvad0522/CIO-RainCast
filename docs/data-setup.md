@@ -62,7 +62,7 @@ The default endpoint restores completed caches; missing or inconsistent caches r
 
 ## 3. Optional S2S comparison
 
-The 2003 S2S panel reads `corr-2003.nc` and `corr-avg-2003.nc` from the root directory `新绘图资料/`. Their `corr` variables have shapes `(11, 20)` and `(20,)`. They are separate research assets, excluded by the NetCDF ignore rules.
+The retained 2003 S2S implementation reads `corr-2003.nc` and `corr-avg-2003.nc` from the root directory `新绘图资料/`. Its panel is currently commented out. The `corr` variables have shapes `(11, 20)` and `(20,)`. They are separate research assets, excluded by the NetCDF ignore rules.
 
 The legacy S2S endpoint can return a generated fallback with `source: "mock"` when these assets are missing. Only `source: "dataset"` represents the research comparison. The separate per-case LSTM–ASTGRN–STDN API reports unavailable cases instead of substituting values; the displayed annual chart uses its bundled statistics.
 

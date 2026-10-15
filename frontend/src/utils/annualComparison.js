@@ -90,8 +90,12 @@ function csvCell(value) {
 }
 
 /** Export all methods; a chart legend's visibility never changes the data. */
-export function buildAnnualComparisonCsv(dataset, start, end) {
-  const regions = aggregateAnnualComparison(dataset, start, end);
+export function buildAnnualComparisonCsv(dataset, start, end, selectedRegion) {
+  const allRegions = aggregateAnnualComparison(dataset, start, end);
+  if (selectedRegion !== undefined && !allRegions.some(region => region.id === selectedRegion)) {
+    throw new Error('Unknown comparison region.');
+  }
+  const regions = selectedRegion === undefined ? allRegions : allRegions.filter(region => region.id === selectedRegion);
   for (const name of ['run', 'sampleCount', 'casesPerRegion']) {
     if (!Number.isInteger(dataset[name]) || dataset[name] < 1) {
       throw new Error(`Missing or invalid CSV metadata: ${name}.`);
@@ -106,6 +110,7 @@ export function buildAnnualComparisonCsv(dataset, start, end) {
   const rows = [
     ['CIO-input annual model comparison'],
     ['Year scope', sortedYears.join('; ')],
+    ['Region scope', regions.map(region => region.label).join('; ')],
     ['Configuration selection', getConfigurationLabel(start, end)],
     ['Configuration start', start],
     ['Configuration end', end],
