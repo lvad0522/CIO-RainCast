@@ -6,14 +6,16 @@ import SkillMap from './components/SkillMap';
 import TimeSeriesChart from './components/TimeSeriesChart';
 // import ModelCompareChart from './components/ModelCompareChart';
 import DatasetEvaluation from './components/DatasetEvaluation';
-import CioModelComparison from './components/CioModelComparison';
+import AnnualModelComparison from './components/AnnualModelComparison';
+import RegionalModelComparison from './components/RegionalModelComparison';
 import CioProjectionResult from './components/CioProjectionResult';
 import NormalizationPanel from './components/NormalizationPanel';
 import { staticCaseInfo } from './staticMode';
+import { initialCase, initialComparisonRegion } from './utils/caseSelection';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_DATA_API_BASE || import.meta.env.VITE_API_BASE || '';
-const defaults = { predYear: 2000, leadTime: 'pre20', predRegion: 'eastasia' };
+const defaults = initialCase(window.location.search);
 
 async function read(path, signal) {
   const response = await fetch(`${API_BASE}${path}`, { signal });
@@ -29,6 +31,7 @@ export default function App() {
   const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
   const [selectedFold, setSelectedFold] = useState(null);
+  const [comparisonRegion, setComparisonRegion] = useState(() => initialComparisonRegion(window.location.search));
   const [grid, setGrid] = useState({ i: 40, j: 50 });
   // 静态演示站：当前组合是否带逐日场与格点序列（普通构建恒为 null，不参与判断）。
   const [caseInfo, setCaseInfo] = useState(null);
@@ -118,7 +121,8 @@ export default function App() {
       </nav>
       <div className="sidebar-footer">
         <p>Based on Zhou et al. (2024), GRL</p>
-        <button className="intro-replay" onClick={() => window.dispatchEvent(new Event('cio-rain:replay-intro'))}>Replay intro</button>
+        {/* 2026-10-15 按 PM 要求隐藏重播入口；恢复时删除本注释与下行注释符即可。 */}
+        {/* <button className="intro-replay" onClick={() => window.dispatchEvent(new Event('cio-rain:replay-intro'))}>Replay intro</button> */}
       </div>
     </aside>
     <main className="main-content" aria-busy={running}>
@@ -135,15 +139,17 @@ export default function App() {
         </section>
       </>}
       {results && <section id="rainfall" className="chain-stage-group">
-        <h2 className="chain-stage-heading">03 / East Asian rainfall · {results.year} · {String(results.lead).replace('pre', '')}-day lead</h2>
+        <h2 className="chain-stage-heading">03 / East Asian rainfall · {results.year} · Input-window configuration {results.lead}</h2>
         <div className="result-row overview-row">
           <div className="result-col"><SkillMap key={`${results.year}-${results.lead}`} data={results.skillMap} region="eastasia" onGridClick={dailyAvailable ? handleGridClick : undefined} /></div>
           <div className="result-col">
             {/* <ModelCompareChart data={results.s2s} /> */}
-            <CioModelComparison year={results.year} lead={results.lead} apiBase={API_BASE} />
+            <AnnualModelComparison selectedRegion={comparisonRegion} onRegionChange={setComparisonRegion} />
           </div>
         </div>
         <TimeSeriesChart data={results.timeSeries} gridLabel={`${(100 + grid.j * .25).toFixed(2)}°E, ${(20 + grid.i * .25).toFixed(2)}°N`} />
+        <RegionalModelComparison year={results.year} lead={results.lead} apiBase={API_BASE}
+          selectedRegion={comparisonRegion} onRegionChange={setComparisonRegion} />
         {!dailyAvailable && <p className="static-demo-note" role="status">
           Day-by-day fields and grid-point time series are missing from this static demo dataset, so clicking the skill map is disabled here.
         </p>}

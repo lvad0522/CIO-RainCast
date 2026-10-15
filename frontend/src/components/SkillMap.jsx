@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getHeatColor } from '../utils/heatColor';
+import { rainfallGridPoint } from '../utils/rainfallPoint';
+import GridPointTooltip from './GridPointTooltip';
 
 // 剖面图已注释停用（2026-08-25：热力图已完整展示 r 分布，单行剖面价值有限）；
 // 如需恢复，取消本行注释并还原下方 barData / selectedI / cross-section 区块
@@ -10,7 +12,7 @@ import { getHeatColor } from '../utils/heatColor';
 // masked 卷积（窗口内按有效格点权重重归一化，无 NaN 晕带——与模板的 NaN 扩散为有意分歧，
 // 前端更优）；内部格点（距边 >2 格）与 scipy 数值精确一致（对拍 max err 4.4e-16），
 // 边界 2 圈为 OOB 重归一化的有意分歧（scipy 用 reflect 镜像填充）；
-// 仅作用于展示层：上色/tooltip/0.5 等值线用平滑场，点击联动永远用原始格点。
+// 仅作用于展示层：上色/0.5 等值线用平滑场，tooltip/点击联动用原始格点。
 const SMOOTH_SIGMA = 0.6; // 可调常量（与模板对齐，勿随意改）
 
 function gaussianSmooth(grid) {
@@ -191,7 +193,6 @@ function MiniRow({ row, onClick }) {
             width: `${100 / row.length}%`,
           }}
           onClick={() => onClick(j)}
-          title={Number.isNaN(v) ? 'No data' : `r ≈ ${v.toFixed(3)}`}
         />
       ))}
     </div>
@@ -202,7 +203,10 @@ export default function SkillMap({ data, region, onGridClick }) {
   const { data: gridData, rows, cols } = data;
   const [geoData, setGeoData] = useState(null);
   const [selected, setSelected] = useState(null);
+  const [hovered, setHovered] = useState(null);
   const point = selected?.gridData === gridData ? selected : null;
+  const hoverPoint = hovered?.gridData === gridData ? hovered : null;
+  const hoverValue = hoverPoint ? gridData[hoverPoint.i][hoverPoint.j] : null;
   const summary = useMemo(() => {
     const values = gridData.flat().filter(Number.isFinite).sort((a, b) => a - b);
     if (!values.length) return null;
@@ -223,12 +227,17 @@ export default function SkillMap({ data, region, onGridClick }) {
       .catch(() => { /* 请求/解析失败均静默降级：仅省略地理线，不抛错 */ });
     return () => { alive = false; };
   }, []);
-  // 平滑为纯展示层：上色/tooltip/等值线用平滑场，点击联动（传 i,j）不受影响
+  // 上色/等值线用平滑场；tooltip/点击读数统一使用原始格点。
   const smoothed = useMemo(() => gaussianSmooth(gridData), [gridData]);
   const handleCellClick = (i, j) => {
     setSelected({ gridData, i, j });
     // 点击仅联动时序图（整列红色高亮曾造成大红线，2026-08-25 已移除）
     if (onGridClick) onGridClick(i, j, region);
+  };
+  const handleMouseMove = event => {
+    const next = rainfallGridPoint(event.clientX, event.clientY,
+      event.currentTarget.getBoundingClientRect(), rows, cols);
+    if (next) setHovered({ ...next, gridData });
   };
   const box = boxRect(gridData);
 
@@ -253,7 +262,8 @@ export default function SkillMap({ data, region, onGridClick }) {
             ))}
             <span className="lat-title">Latitude (°N)</span>
           </div>
-          <div className="heatmap-scroll">
+          <div className="heatmap-scroll" onMouseMove={handleMouseMove}
+            onMouseLeave={() => setHovered(null)}>
             {/* 数组行号 i=0 为 20°N（南）、i=80 为 40°N（北）；翻转渲染使北在上（与论文/plot_our 一致） */}
             {[...smoothed].reverse().map((row, k) => {
               const iData = smoothed.length - 1 - k;
@@ -316,6 +326,8 @@ export default function SkillMap({ data, region, onGridClick }) {
               {point && <rect x={point.j} y={rows - 1 - point.i} width={1} height={1}
                 fill="none" stroke="#111" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
             </svg>
+            <GridPointTooltip point={hoverPoint} label="Pearson r"
+              value={Number.isFinite(hoverValue) ? hoverValue : 'Undefined'} />
           </div>
         </div>
         {/* 经度轴（底部，100-125°E 每 5°，与论文/plot_our 的 x 轴一致） */}

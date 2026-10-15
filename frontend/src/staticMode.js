@@ -48,9 +48,9 @@ import {
   float32Payload,
   float64Payload,
   resolveAssetUrl,
-} from './utils/staticRebuild';
+} from './utils/staticRebuild.js';
 
-export { buildFieldFrame, buildGridResponse, rainfallColorLimit } from './utils/staticRebuild';
+export { buildFieldFrame, buildGridResponse, rainfallColorLimit } from './utils/staticRebuild.js';
 
 // `import.meta.env` is replaced by Vite at build time; the fallback keeps the
 // module importable from plain Node so the shim can be driven without a
@@ -298,6 +298,17 @@ export async function resolveApi(parsed) {
     return jsonResponse(buildGridResponse(
       arrays, Number(query.get('i')), Number(query.get('j')),
     ));
+  }
+
+  if (path === '/api/regional-model-series') {
+    const year = Number(query.get('year') ?? 2018);
+    const pre = Number(String(query.get('lead') ?? 5).replace(/^pre/, ''));
+    const region = query.get('region') ?? 'focus';
+    if (!Number.isInteger(year) || year < 2000 || year > 2019
+      || !Number.isInteger(pre) || pre < 1 || pre > 20 || !['focus', 'eastasia'].includes(region)) {
+      return jsonResponse({ detail: 'Invalid year, input-window configuration, or region.' }, 422);
+    }
+    return readBakedFile(manifest, `regional-model-series/${year}-pre${pre}_${region}.json`);
   }
 
   if (path === '/api/model-comparison') {

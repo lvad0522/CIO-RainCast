@@ -2,17 +2,17 @@ import { Children, useEffect, useRef, useState } from 'react';
 
 export default function ParamPanel({ params, onChange, disabled = false }) {
   return <fieldset className="panel-section forecast-parameters" disabled={disabled}>
-    <h3 className="section-title">Forecast settings</h3>
+    <h3 className="section-title">Case settings</h3>
     <div className="param-group">
-      <label>Forecast year</label>
-      <StyledSelect ariaLabel="Forecast year" value={params.predYear} onChange={event => onChange('predYear', Number(event.target.value))}>
+      <label>Year</label>
+      <StyledSelect ariaLabel="Year" value={params.predYear} onChange={event => onChange('predYear', Number(event.target.value))}>
         {Array.from({ length: 20 }, (_, i) => 2000+i).map(year => <option key={year} value={year}>{year}</option>)}
       </StyledSelect>
     </div>
     <div className="param-group">
-      <label>Lead time</label>
-      <StyledSelect ariaLabel="Lead time" value={params.leadTime} onChange={event => onChange('leadTime', event.target.value)}>
-        {Array.from({ length: 20 }, (_, i) => i+1).map(lead => <option key={lead} value={`pre${lead}`}>{lead}-day lead</option>)}
+      <label>Input-window configuration</label>
+      <StyledSelect ariaLabel="Input-window configuration" value={params.leadTime} onChange={event => onChange('leadTime', event.target.value)}>
+        {Array.from({ length: 20 }, (_, i) => i+1).map(lead => <option key={lead} value={`pre${lead}`}>pre{lead}</option>)}
       </StyledSelect>
     </div>
   </fieldset>;

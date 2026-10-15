@@ -49,6 +49,15 @@ test('annual means give each selected configuration equal weight in both regions
   assert.deepEqual(data, fixture(), 'aggregation must not mutate the source data');
 });
 
+test('fixed 140-case annual export retains three models and the diagnostic reference', () => {
+  const data = JSON.parse(readFileSync(new URL('../src/data/annualModelComparison.json', import.meta.url), 'utf8'));
+  const csv = buildAnnualComparisonCsv(data, 1, 7, 'focus');
+  assert.ok(csv.includes('Selected cases per region,140\r\n'));
+  assert.ok(csv.includes('Region,Year,Configuration count,LSTM,ASTGRN,STDN,reference\r\n'));
+  assert.equal(csv.split('\r\n').filter(row => /^focus,\d{4},/.test(row)).length, 20);
+  assert.ok(csv.includes('Reference definition,'));
+});
+
 test('single configuration selection and pre20 preserve the source correlations', () => {
   const data = fixture();
   for (const pre of [1, 2, 20]) {

@@ -5,6 +5,7 @@ import {
 import { getHeatColor } from '../utils/heatColor';
 import { rainfallScaleMax } from '../utils/rainfallScale';
 import { rainfallGridPoint } from '../utils/rainfallPoint';
+import GridPointTooltip from './GridPointTooltip';
 import { isStaticMode, staticAssetUrl } from '../staticMode';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -518,13 +519,8 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
                 onMouseLeave={() => setHoveredRainfallGrid(null)}
                 onClick={event => inspectRainfallPoint(event, true)}
               />
-              {hoverPoint && <div className="rainfall-map-tooltip" role="tooltip" style={{
-                left: `clamp(8px, ${hoverPoint.x + 12}px, max(8px, calc(100% - 236px)))`,
-                top: `clamp(8px, ${hoverPoint.y + 12}px, max(8px, calc(100% - 70px)))`,
-              }}>
-                <span>{hoverPoint.lon.toFixed(2)}°E, {hoverPoint.lat.toFixed(2)}°N</span>
-                <strong>{rainfallValueLabel}: {pointValue(hoverPoint)}</strong>
-              </div>}
+              <GridPointTooltip point={hoverPoint} label={rainfallValueLabel}
+                value={hoverPoint ? pointValue(hoverPoint) : null} />
             </GeoHeatmapFrame>
             <div className="prediction-legend">
               <span>{view === 'error' ? `Underestimate −${ERROR_COLOR_LIMIT}` : `Negative anomaly ${colorScaleMax != null ? (-colorScaleMax).toFixed(2) : '—'}`}</span>
