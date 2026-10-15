@@ -506,6 +506,12 @@
   justify-self: start;
   color: #8b6b2d;
 }
+/* 2026-10-15 按 PM 要求：实时降水预测图的格点读数排成单行（原 100px+1fr 两列会折成两行）。 */
+.rainfall-point-readout {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  justify-content: start;
+}
 .prediction-legend {
   display: flex;
   align-items: center;
@@ -1494,6 +1500,7 @@
   .prediction-summary strong { margin-bottom: 6px; }
   .pearson-point-readout { grid-template-columns: minmax(0, 1fr); font-size: 13px; }
   .pearson-point-readout strong { white-space: normal; overflow-wrap: anywhere; }
+  .rainfall-point-readout { grid-auto-flow: row; }
   .view-toggle { flex-wrap: wrap; }
   .results-table { min-width: 620px; }
   .lon-axis, .lat-axis { font-size: 11px; }
