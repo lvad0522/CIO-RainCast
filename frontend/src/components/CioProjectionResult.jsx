@@ -539,14 +539,35 @@ function ContributionSummary({ preview }) {
   );
 }
 
+// 2026-10-15 拖拽优化：帧按 time_index 缓存（LRU，最多 24 帧），拖动过程中停稳
+// PREVIEW_SETTLE_MS 毫秒才取帧；取新帧期间继续显示上一帧——原实现每档都发一次请求，
+// 且每档都先塌回 "Loading projection preview" 再重建整卡，拖动时闪烁严重。
+const PREVIEW_CACHE_LIMIT = 24;
+const PREVIEW_SETTLE_MS = 80;
+
 function useProjectionPreview(jobId, enabled, timeIndex, apiBase) {
-  const requestKey = jobId && enabled ? `${jobId}:${timeIndex}` : null;
-  const [result, setResult] = useState({ requestKey: null, preview: null, error: null });
+  const cacheRef = useRef(new Map());
+  const [settledIndex, setSettledIndex] = useState(timeIndex);
+  const [result, setResult] = useState({ jobId: null, requestKey: null, preview: null, error: null });
+
+  // 滑块落稳后再取帧：连续拖动不为每个中间档位发请求。
+  useEffect(() => {
+    if (settledIndex === timeIndex) return undefined;
+    const timer = setTimeout(() => setSettledIndex(timeIndex), PREVIEW_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [timeIndex, settledIndex]);
+
+  const settledKey = jobId && enabled ? `${jobId}:${settledIndex}` : null;
 
   useEffect(() => {
-    if (!requestKey) return undefined;
+    if (!settledKey) return undefined;
+    const cachedFrame = cacheRef.current.get(settledKey);
+    if (cachedFrame) {
+      setResult({ jobId, requestKey: settledKey, preview: cachedFrame, error: null });
+      return undefined;
+    }
     const controller = new AbortController();
-    fetch(`${apiBase}/api/chain/jobs/${jobId}/projection-preview?time_index=${timeIndex}`, {
+    fetch(`${apiBase}/api/chain/jobs/${jobId}/projection-preview?time_index=${settledIndex}`, {
       signal: controller.signal,
     })
       .then(async response => {
@@ -554,18 +575,24 @@ function useProjectionPreview(jobId, enabled, timeIndex, apiBase) {
         if (!response.ok) throw new Error(payload.detail || `Unable to load projection (${response.status})`);
         return payload;
       })
-      .then(payload => { setResult({ requestKey, preview: payload, error: null }); })
+      .then(payload => {
+        const cache = cacheRef.current;
+        cache.set(settledKey, payload);
+        if (cache.size > PREVIEW_CACHE_LIMIT) cache.delete(cache.keys().next().value);
+        setResult({ jobId, requestKey: settledKey, preview: payload, error: null });
+      })
       .catch(reason => {
         if (reason.name !== 'AbortError') {
-          setResult({ requestKey, preview: null, error: reason.message || 'Unable to load projection' });
+          setResult({ jobId, requestKey: settledKey, preview: null, error: reason.message || 'Unable to load projection' });
         }
       });
     return () => controller.abort();
-  }, [jobId, requestKey, timeIndex, apiBase]);
+  }, [jobId, settledKey, settledIndex, apiBase]);
 
-  return result.requestKey === requestKey
-    ? { preview: result.preview, error: result.error }
-    : { preview: null, error: null };
+  // 换 job（组件按 jobId 重挂载，这里兜底）→ 立刻清空；同 job 内换档 → 保留上一帧直到新帧到达。
+  if (result.jobId !== jobId) return { preview: null, error: null };
+  if (result.requestKey === settledKey) return { preview: result.preview, error: result.error };
+  return { preview: result.preview, error: null };
 }
 
 export default function CioProjectionResult({ job, apiBase = API_BASE }) {
