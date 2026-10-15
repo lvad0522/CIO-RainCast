@@ -204,6 +204,7 @@
 
 /* ─── 参数组 ─── */
 .param-group { margin-bottom: 10px; }
+.forecast-parameters > .param-group:not(:last-child) { margin-bottom: 18px; }
 .param-group label {
   display: block;
   font-size: 12px;
