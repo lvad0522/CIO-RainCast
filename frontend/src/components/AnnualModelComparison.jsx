@@ -4,6 +4,7 @@ import {
   Tooltip, XAxis, YAxis,
 } from 'recharts';
 import comparisonData from '../data/annualModelComparison.json';
+import CurrentModelMetrics from './CurrentModelMetrics';
 import {
   METHODS, aggregateAnnualComparison, buildAnnualComparisonCsv,
 } from '../utils/annualComparison';
@@ -17,8 +18,7 @@ const STYLES = {
 
 // Keep each region's scale fixed while changing configurations or hiding a series.
 const AXES = Object.fromEntries(comparisonData.regions.map(region => {
-  const values = aggregateAnnualComparison(comparisonData, 1, 7)
-    .find(item => item.id === region.id).points.flatMap(point => METHODS.map(method => point[method]));
+  const values = region.points.flatMap(point => METHODS.map(method => point[method]));
   const step = region.id === 'eastasia' ? .1 : .2;
   const lower = Math.max(-1, Math.floor((Math.min(...values) - .01) / step) * step);
   const upper = Math.min(1, Math.ceil((Math.max(...values) + .01) / step) * step);
@@ -37,37 +37,43 @@ function Marker({ cx, cy, method, size = 2.8 }) {
   return <circle cx={cx} cy={cy} r={size} {...common} />;
 }
 
-function exportComparison(region) {
-  const csv = buildAnnualComparisonCsv(comparisonData, 1, 7, region);
+function exportComparison(end, region) {
+  const csv = buildAnnualComparisonCsv(comparisonData, 1, end, region);
   const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `annual_model_comparison_${region}_2000-2019_pre1-pre7.csv`;
+  anchor.download = `annual_model_comparison_${region}_2000-2019_pre1${end === 1 ? '' : `-pre${end}`}.csv`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export default function AnnualModelComparison({ selectedRegion = 'focus', onRegionChange }) {
+export default function AnnualModelComparison({ year, lead, apiBase = '', selectedRegion = 'focus', onRegionChange }) {
+  const [end, setEnd] = useState(7);
   const [hidden, setHidden] = useState([]);
-  const regions = useMemo(() => aggregateAnnualComparison(comparisonData, 1, 7), []);
+  const regions = useMemo(() => aggregateAnnualComparison(comparisonData, 1, end), [end]);
   const region = regions.find(item => item.id === selectedRegion);
-  const label = 'pre1–pre7 mean';
+  const label = end === 1 ? '1-day lead' : `1–${end}-day mean`;
   const toggle = method => setHidden(current => current.includes(method)
     ? current.filter(item => item !== method) : [...current, method]);
 
   return <section className="result-card cio-comparison annual-comparison" aria-label="Annual model comparison with other-year reference">
     <div className="result-header cio-comparison-header">
       <h3 className="result-title">Annual model comparison</h3>
-      <button type="button" className="export-btn" onClick={() => exportComparison(selectedRegion)}>Export CSV</button>
+      <button type="button" className="export-btn" onClick={() => exportComparison(end, selectedRegion)}>Export CSV</button>
     </div>
     <div className="annual-comparison-controls">
       <label>Region
-        <select aria-label="Annual comparison region" value={selectedRegion} onChange={event => onRegionChange?.(event.target.value)}>
+        <select aria-label="Comparison region" value={selectedRegion} onChange={event => onRegionChange?.(event.target.value)}>
           <option value="focus">Focus region</option>
           <option value="eastasia">East Asia</option>
+        </select>
+      </label>
+      <label>Lead-time average
+        <select aria-label="Comparison lead-time window" value={end} onChange={event => setEnd(Number(event.target.value))}>
+          {comparisonData.configurations.map(pre => <option key={pre} value={pre}>{pre === 1 ? '1 day' : `1–${pre} days`}</option>)}
         </select>
       </label>
     </div>
@@ -113,8 +119,8 @@ export default function AnnualModelComparison({ selectedRegion = 'focus', onRegi
         </ResponsiveContainer>
       </div>
     </div>
-    <p className="annual-comparison-note">Each year averages grid-point correlations across input-window configurations pre1–pre7.</p>
-    <p className="annual-comparison-note">Other-year mean: same-position processed observations from the other 19 years, excluding the evaluated year; a diagnostic reference.</p>
-    <p className="annual-comparison-coverage">2000–2019 · 140 cases per region · Run 1</p>
+    <p className="annual-comparison-note">Other-year mean: same-position observations from the other 19 years.</p>
+    <p className="annual-comparison-coverage">{comparisonData.years.length * end} cases · Common valid correlation points</p>
+    <CurrentModelMetrics year={year} lead={lead} region={selectedRegion} apiBase={apiBase} />
   </section>;
 }
