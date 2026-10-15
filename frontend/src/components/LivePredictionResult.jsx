@@ -719,9 +719,9 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
                 return (
                   <div className="pearson-point-readout" role="status">
                     <span>Selected grid point</span>
-                    <strong>{lon.toFixed(2)}°E，{lat.toFixed(2)}°N</strong>
+                    <strong>{lon.toFixed(2)}°E, {lat.toFixed(2)}°N</strong>
                     <span>Pearson correlation</span>
-                    <strong>{finite ? `r = ${value}` : 'r Undefined'}</strong>
+                    <strong>{finite ? `r = ${value.toFixed(3)}` : 'r Undefined'}</strong>
                     {!finite && <span className="pearson-point-status">Undefined correlation</span>}
                   </div>
                 );

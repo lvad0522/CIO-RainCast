@@ -327,7 +327,7 @@ export default function SkillMap({ data, region, onGridClick }) {
                 fill="none" stroke="#111" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
             </svg>
             <GridPointTooltip point={hoverPoint} label="Pearson r"
-              value={Number.isFinite(hoverValue) ? hoverValue : 'Undefined'} />
+              value={Number.isFinite(hoverValue) ? hoverValue.toFixed(3) : 'Undefined'} />
           </div>
         </div>
         {/* 经度轴（底部，100-125°E 每 5°，与论文/plot_our 的 x 轴一致） */}
@@ -355,8 +355,8 @@ export default function SkillMap({ data, region, onGridClick }) {
         return (
           <div className="pearson-point-readout" role="status">
             <span>Selected grid point</span>
-            <strong>{(100 + point.j * 25 / (cols - 1)).toFixed(2)}°E，{(20 + point.i * 20 / (rows - 1)).toFixed(2)}°N</strong>
-            <span>Pearson correlation</span><strong>{finite ? `r = ${value}` : 'r Undefined'}</strong>
+            <strong>{(100 + point.j * 25 / (cols - 1)).toFixed(2)}°E, {(20 + point.i * 20 / (rows - 1)).toFixed(2)}°N</strong>
+            <span>Pearson correlation</span><strong>{finite ? `r = ${value.toFixed(3)}` : 'r Undefined'}</strong>
             {!finite && <span className="pearson-point-status">Undefined correlation</span>}
           </div>
         );
