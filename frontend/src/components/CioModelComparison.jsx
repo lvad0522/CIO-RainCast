@@ -1,3 +1,4 @@
+import StyledSelect from './StyledSelect';
 import { useMemo, useState } from 'react';
 import {
   CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer,
@@ -67,15 +68,15 @@ export default function CioModelComparison({ year, lead, apiBase = '' }) {
     </div>
     <div className="annual-comparison-controls">
       <label>Region
-        <select aria-label="Comparison region" value={selectedRegion} onChange={event => setSelectedRegion(event.target.value)}>
+        <StyledSelect variant="light" ariaLabel="Comparison region" value={selectedRegion} onChange={event => setSelectedRegion(event.target.value)}>
           <option value="focus">Focus region</option>
           <option value="eastasia">East Asia</option>
-        </select>
+        </StyledSelect>
       </label>
       <label>Lead-time average
-        <select aria-label="Comparison lead-time window" value={end} onChange={event => setEnd(Number(event.target.value))}>
+        <StyledSelect variant="light" ariaLabel="Comparison lead-time window" value={end} onChange={event => setEnd(Number(event.target.value))}>
           {comparisonData.configurations.map(pre => <option key={pre} value={pre}>{pre === 1 ? '1 day' : `1–${pre} days`}</option>)}
-        </select>
+        </StyledSelect>
       </label>
     </div>
     <div className="annual-comparison-summary">
