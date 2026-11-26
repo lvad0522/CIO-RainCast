@@ -405,6 +405,7 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
   };
 
   const focus = focusRegion?.jobId === job.jobId ? focusRegion.data : null;
+  const rainfallDate = focus?.dates?.[timeIndex];
   const focusChartData = (focus?.pred || []).map((value, index) => ({
     day: index + 1,
     date: focus?.dates?.[index] || `Day ${index + 1}`,
@@ -475,7 +476,9 @@ export default function LivePredictionResult({ job, apiRoot, showSkill = true, s
               </div>
             </div>
             <p className="field-meta">
-              Time step {timeIndex + 1}/112 · Field range {frame ? `${frame.min.toFixed(3)} ～ ${frame.max.toFixed(3)}` : 'Loading'}
+              Time step {timeIndex + 1}/112
+              {rainfallDate && <> · Date: <time dateTime={rainfallDate}>{rainfallDate}</time></>}
+              {' · Field range '}{frame ? `${frame.min.toFixed(3)} ～ ${frame.max.toFixed(3)}` : 'Loading'}
               {view !== 'prediction' && pearson?.truthName ? ` · ${pearson.truthName}` : ''}
             </p>
             {showColorScaleControl && (
